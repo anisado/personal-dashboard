@@ -97,7 +97,10 @@ router.post('/translate', upload.single('source'), async (req, res, next) => {
       return res.status(400).json({ error: 'Could not read the .docx file — is it a real Word document?' });
     }
     if (err.name === 'AbortError') {
-      return res.status(504).json({ error: 'Translation timed out — try a shorter document' });
+      return res.status(504).json({
+        error:
+          'Translation timed out — the model is too slow for this document; try a smaller model or raise TRANSLATION_TIMEOUT_MS'
+      });
     }
     next(err);
   }

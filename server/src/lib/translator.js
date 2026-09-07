@@ -1,7 +1,9 @@
 import { requireProvider } from './provider.js';
 
 const BATCH_SIZE = 8;
-const TIMEOUT_MS = 180_000;
+// per batch, not per document: local models on CPU need minutes, and a long
+// document should not fail just because it has many batches
+const BATCH_TIMEOUT_MS = Number(process.env.TRANSLATION_TIMEOUT_MS || 600_000);
 
 const SYSTEM_PROMPT = `You are a sworn legal translator working from Arabic into English.
 Translate each numbered paragraph faithfully and completely:
@@ -52,18 +54,19 @@ async function translateBatch(batch, glossary, { apiKey, baseUrl, model, signal 
  */
 export async function translateParagraphs(paragraphs, { glossary = {} } = {}) {
   const settings = await requireProvider();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const items = paragraphs.map((source, index) => ({ index: index + 1, source }));
+  const segments = [];
 
-  try {
-    const segments = [];
-    for (let start = 0; start < items.length; start += BATCH_SIZE) {
-      const batch = items.slice(start, start + BATCH_SIZE);
+  for (let start = 0; start < items.length; start += BATCH_SIZE) {
+    const batch = items.slice(start, start + BATCH_SIZE);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BATCH_TIMEOUT_MS);
+    try {
       segments.push(...(await translateBatch(batch, glossary, { ...settings, signal: controller.signal })));
+    } finally {
+      clearTimeout(timeout);
     }
-    return { model: settings.model, segments };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return { model: settings.model, segments };
 }

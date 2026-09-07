@@ -47,6 +47,8 @@ Environment variables:
 | `OPENAI_API_KEY` | unset | Hosted provider key; setting it (or `OPENAI_BASE_URL`) enables the Translate tab and the semantic review in Translation Audit |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for translation and semantic review |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for translation and semantic review |
+| `TRANSLATION_TIMEOUT_MS` | `600000` | Timeout per translated batch (8 paragraphs); raise it for big models on CPU |
+| `REVIEW_TIMEOUT_MS` | `600000` | Timeout per semantic-review batch |
 
 ### Local model instead of OpenAI
 

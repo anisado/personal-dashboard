@@ -7,6 +7,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
+      TRANSLATION_TIMEOUT_MS: ${TRANSLATION_TIMEOUT_MS:-}
+      REVIEW_TIMEOUT_MS: ${REVIEW_TIMEOUT_MS:-}
     extra_hosts:
       # lets the container reach a model server running on the host
       - 'host.docker.internal:host-gateway'

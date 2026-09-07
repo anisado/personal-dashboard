@@ -1,6 +1,7 @@
 import { requireProvider } from './provider.js';
 
 const BATCH_SIZE = 12;
+const BATCH_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS || 600_000);
 
 const SYSTEM_PROMPT = `You audit Arabic-to-English translations. For each numbered segment you receive the Arabic source and its English translation.
 Report only real problems: mistranslation, omitted or added meaning, wrong terminology, wrong numbers/names/dates, grammar that changes meaning, or tone that misrepresents the source.
@@ -44,14 +45,14 @@ export async function reviewSegments(segments) {
   const { apiKey, baseUrl, model } = await requireProvider();
 
   const candidates = segments.filter((segment) => segment.source && segment.target);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const issues = [];
 
-  try {
-    const issues = [];
-    for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
-      const batch = candidates.slice(start, start + BATCH_SIZE);
-      const batchIndexes = new Set(batch.map((segment) => segment.index));
+  for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
+    const batch = candidates.slice(start, start + BATCH_SIZE);
+    const batchIndexes = new Set(batch.map((segment) => segment.index));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BATCH_TIMEOUT_MS);
+    try {
       for (const issue of await reviewBatch(batch, { apiKey, baseUrl, model, signal: controller.signal })) {
         if (!batchIndexes.has(Number(issue.segmentIndex))) continue;
         issues.push({
@@ -63,9 +64,10 @@ export async function reviewSegments(segments) {
           source: 'llm'
         });
       }
+    } finally {
+      clearTimeout(timeout);
     }
-    return { model, issues };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return { model, issues };
 }
