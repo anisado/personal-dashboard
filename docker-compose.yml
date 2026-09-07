@@ -23,5 +23,17 @@ services:
       - '${WEB_PORT:-8080}:80'
     restart: unless-stopped
 
+  # Optional local model server, started with: docker compose --profile local-ai up -d
+  ollama:
+    image: ollama/ollama:0.33.2
+    profiles:
+      - local-ai
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - '${OLLAMA_PORT:-11434}:11434'
+    restart: unless-stopped
+
 volumes:
   dashboard-data:
+  ollama-models:

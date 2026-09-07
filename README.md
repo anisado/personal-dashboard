@@ -48,6 +48,19 @@ Environment variables:
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for translation and semantic review |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for translation and semantic review |
 
+### Local model instead of OpenAI
+
+Any OpenAI-compatible server works, including a fully local one. With the bundled Ollama service:
+
+```bash
+docker compose --profile local-ai up -d
+docker compose exec ollama ollama pull qwen2.5:7b-instruct
+OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://ollama:11434/v1 OPENAI_MODEL=qwen2.5:7b-instruct \
+  docker compose --profile local-ai up -d
+```
+
+Nothing leaves the machine, which matters for confidential legal documents. On CPU expect roughly half a minute per handful of paragraphs; a GPU host is much faster.
+
 Without `OPENAI_API_KEY` the audit runs deterministic checks only: they catch mechanical errors (omissions, numbers, links, leftover Arabic, inconsistent terms) but cannot judge meaning.
 
 ## API
