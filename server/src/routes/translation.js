@@ -152,9 +152,16 @@ router.post(
           const review = await reviewSegments(result.segments);
           result.llm.model = review.model;
           result.issues = [...result.issues, ...review.issues].sort((a, b) => a.segmentIndex - b.segmentIndex);
+          const ratings = new Map(review.ratings.map((rating) => [rating.segmentIndex, rating]));
           for (const segment of result.segments) {
             segment.issues = result.issues.filter((issue) => issue.segmentIndex === segment.index);
+            const rating = ratings.get(segment.index);
+            if (rating) {
+              segment.rating = rating.rating;
+              segment.note = rating.note || undefined;
+            }
           }
+          result.summary.quality = { ...review.quality, model: review.model };
           result.summary.issues = result.issues.length;
           for (const issue of review.issues) {
             result.summary.bySeverity[issue.severity] += 1;

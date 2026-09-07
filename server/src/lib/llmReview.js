@@ -1,12 +1,20 @@
 import { requireProvider } from './provider.js';
 
-const BATCH_SIZE = 12;
+const BATCH_SIZE = 8;
+const RATINGS = ['accurate', 'minor', 'major', 'wrong'];
+const RATING_SCORE = { accurate: 100, minor: 80, major: 40, wrong: 0 };
 const BATCH_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS || 600_000);
 
-const SYSTEM_PROMPT = `You audit Arabic-to-English translations. For each numbered segment you receive the Arabic source and its English translation.
-Report only real problems: mistranslation, omitted or added meaning, wrong terminology, wrong numbers/names/dates, grammar that changes meaning, or tone that misrepresents the source.
-Ignore stylistic preferences that keep the meaning intact.
-Respond with JSON only: {"issues":[{"segmentIndex":number,"severity":"high"|"medium"|"low","type":"mistranslation"|"omission"|"addition"|"terminology"|"grammar"|"tone","message":string,"suggestion":string}]}. Return an empty array when a batch is fine.`;
+const SYSTEM_PROMPT = `You audit Arabic-to-English legal translations. For each numbered segment you receive the Arabic source and its English translation.
+Grade every segment you are given:
+- "accurate": the English conveys the full legal meaning of the Arabic.
+- "minor": meaning preserved but wording, terminology or register could be better.
+- "major": meaning is distorted, something material is missing or added.
+- "wrong": the English does not translate this Arabic at all.
+Judge meaning, not style. Do not invent problems; an idiomatic, complete rendering is "accurate".
+Respond with JSON only:
+{"segments":[{"index":number,"rating":"accurate"|"minor"|"major"|"wrong","note":string,"issues":[{"severity":"high"|"medium"|"low","type":"mistranslation"|"omission"|"addition"|"terminology"|"grammar"|"tone","message":string,"suggestion":string}]}]}
+Grade every index in the batch. Leave "issues" empty for accurate segments and keep "note" short (or empty when accurate).`;
 
 async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
   const body = {
@@ -38,7 +46,7 @@ async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content ?? '{}';
   const parsed = JSON.parse(content);
-  return Array.isArray(parsed.issues) ? parsed.issues : [];
+  return Array.isArray(parsed.segments) ? parsed.segments : [];
 }
 
 export async function reviewSegments(segments) {
@@ -46,6 +54,7 @@ export async function reviewSegments(segments) {
 
   const candidates = segments.filter((segment) => segment.source && segment.target && segment.confident !== false);
   const issues = [];
+  const ratings = [];
 
   for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
     const batch = candidates.slice(start, start + BATCH_SIZE);
@@ -53,21 +62,52 @@ export async function reviewSegments(segments) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), BATCH_TIMEOUT_MS);
     try {
-      for (const issue of await reviewBatch(batch, { apiKey, baseUrl, model, signal: controller.signal })) {
-        if (!batchIndexes.has(Number(issue.segmentIndex))) continue;
-        issues.push({
-          segmentIndex: Number(issue.segmentIndex),
-          type: issue.type || 'mistranslation',
-          severity: ['high', 'medium', 'low'].includes(issue.severity) ? issue.severity : 'medium',
-          message: String(issue.message || '').slice(0, 500),
-          detail: issue.suggestion ? `suggestion: ${String(issue.suggestion).slice(0, 500)}` : undefined,
-          source: 'llm'
-        });
+      for (const graded of await reviewBatch(batch, { apiKey, baseUrl, model, signal: controller.signal })) {
+        const index = Number(graded.index);
+        if (!batchIndexes.has(index)) continue;
+        const rating = RATINGS.includes(graded.rating) ? graded.rating : 'minor';
+        ratings.push({ segmentIndex: index, rating, note: String(graded.note || '').slice(0, 500) });
+        for (const issue of Array.isArray(graded.issues) ? graded.issues : []) {
+          issues.push({
+            segmentIndex: index,
+            type: issue.type || 'mistranslation',
+            severity: ['high', 'medium', 'low'].includes(issue.severity) ? issue.severity : 'medium',
+            message: String(issue.message || '').slice(0, 500),
+            detail: issue.suggestion ? `suggestion: ${String(issue.suggestion).slice(0, 500)}` : undefined,
+            source: 'llm'
+          });
+        }
       }
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  return { model, issues };
+  const counts = { accurate: 0, minor: 0, major: 0, wrong: 0 };
+  for (const { rating } of ratings) counts[rating] += 1;
+  const score = ratings.length
+    ? Math.round(ratings.reduce((sum, { rating }) => sum + RATING_SCORE[rating], 0) / ratings.length)
+    : null;
+
+  return {
+    model,
+    issues,
+    ratings,
+    quality: {
+      score,
+      verdict:
+        score === null
+          ? 'not rated'
+          : score >= 90
+            ? 'faithful translation'
+            : score >= 75
+              ? 'usable, some wording to fix'
+              : score >= 50
+                ? 'meaning drifts — needs correction'
+                : 'not a reliable translation',
+      rated: ratings.length,
+      unrated: candidates.length - ratings.length,
+      counts
+    }
+  };
 }

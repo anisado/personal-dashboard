@@ -4,6 +4,19 @@ import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2, info: 3 };
 
+const RATING_LABEL = {
+  accurate: 'accurate',
+  minor: 'minor wording',
+  major: 'meaning changed',
+  wrong: 'not a translation'
+};
+
+function ratingClass(rating) {
+  if (rating === 'accurate') return 'pill';
+  if (rating === 'minor') return 'pill low';
+  return rating === 'major' ? 'pill medium' : 'pill high';
+}
+
 function severityClass(severity) {
   if (severity === 'high') return 'pill high';
   if (severity === 'medium') return 'pill medium';
@@ -12,7 +25,7 @@ function severityClass(severity) {
 
 export default function Translation() {
   const [config, setConfig] = useState({ llmAvailable: false });
-  const [useLlm, setUseLlm] = useState(false);
+  const [useLlm, setUseLlm] = useState(true);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
@@ -60,8 +73,11 @@ export default function Translation() {
   };
 
   const segments = result
-    ? result.segments.filter((segment) => (filter === 'issues' ? segment.issues.length > 0 : true))
+    ? result.segments.filter((segment) =>
+        filter === 'issues' ? segment.issues.length > 0 || (segment.rating && segment.rating !== 'accurate') : true
+      )
     : [];
+  const quality = result?.summary?.quality;
 
   return (
     <Page title="Translation Audit" subtitle="Upload the Arabic original and its English translation to review the work.">
@@ -89,8 +105,8 @@ export default function Translation() {
               />
               <span className={config.llmAvailable ? '' : 'muted'}>
                 {config.llmAvailable
-                  ? `Add semantic review (${config.model})`
-                  : 'Semantic review unavailable — no model reachable'}
+                  ? `Grade translation quality with ${config.model}`
+                  : 'Quality grading unavailable — no model reachable'}
               </span>
             </label>
             <button type="submit" disabled={pending}>
@@ -103,7 +119,17 @@ export default function Translation() {
       {result && (
         <>
           <div className="grid stats-grid">
-            <Card title="Score">
+            <Card title="Translation quality">
+              <p className="metric">{quality?.score ?? '—'}</p>
+              <p className="muted">
+                {quality
+                  ? `${quality.verdict} · ${quality.counts.accurate} accurate / ${quality.counts.minor} minor / ${quality.counts.major} major / ${quality.counts.wrong} wrong`
+                  : result.llm?.available
+                    ? 'enable semantic review to grade the meaning'
+                    : 'no model reachable — mechanical checks only'}
+              </p>
+            </Card>
+            <Card title="Mechanical score">
               <p className="metric">{result.summary.score}</p>
               <p className="muted">{result.summary.verdict}</p>
             </Card>
@@ -171,6 +197,12 @@ export default function Translation() {
           ) : (
             segments.map((segment) => (
               <Card key={segment.index} title={`Segment ${segment.index}`}>
+                {segment.rating && (
+                  <p>
+                    <span className={ratingClass(segment.rating)}>{RATING_LABEL[segment.rating]}</span>
+                    {segment.note && <span className="muted"> {segment.note}</span>}
+                  </p>
+                )}
                 <div className="segment">
                   <p className="arabic" dir="rtl" lang="ar">
                     {segment.source || <span className="muted">— no Arabic source —</span>}
@@ -204,7 +236,9 @@ export default function Translation() {
               <li key={audit.id}>
                 <span>{audit.files?.source}</span>
                 <span className="muted">→ {audit.files?.target}</span>
-                <span className="tag">score {audit.summary?.score}</span>
+                <span className="tag">
+                  {audit.summary?.quality?.score != null ? `quality ${audit.summary.quality.score}` : `score ${audit.summary?.score}`}
+                </span>
                 <span className="muted right">{new Date(audit.createdAt).toLocaleString()}</span>
               </li>
             ))}
