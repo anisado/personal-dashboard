@@ -83,7 +83,7 @@ export default function Translate() {
             <span className={config.translationAvailable ? 'muted' : ''}>
               {config.translationAvailable
                 ? `Engine: ${config.model}`
-                : 'Translation unavailable — set OPENAI_API_KEY on the API'}
+                : 'Translation unavailable — start the API with a model: ./scripts/local-ai.sh'}
             </span>
             <button type="submit" disabled={pending || !config.translationAvailable}>
               {pending ? 'translating…' : 'Translate document'}

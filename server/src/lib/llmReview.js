@@ -1,7 +1,7 @@
 const BATCH_SIZE = 12;
 
 export function llmConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY);
+  return Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
 }
 
 const SYSTEM_PROMPT = `You audit Arabic-to-English translations. For each numbered segment you receive the Arabic source and its English translation.
@@ -43,8 +43,8 @@ async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
 }
 
 export async function reviewSegments(segments) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+  if (!llmConfigured()) throw new Error('No OpenAI-compatible endpoint is configured');
+  const apiKey = process.env.OPENAI_API_KEY || 'local';
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 

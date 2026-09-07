@@ -44,24 +44,23 @@ Environment variables:
 | `DATA_DIR` | `./data` | API JSON storage directory |
 | `VITE_API_TARGET` | `http://localhost:4000` | Vite dev proxy target |
 | `VITE_API_BASE` | `/api` | Frontend API base path |
-| `OPENAI_API_KEY` | unset | Enables the Translate tab and the optional semantic review in Translation Audit (both disabled when unset) |
+| `OPENAI_API_KEY` | unset | Hosted provider key; setting it (or `OPENAI_BASE_URL`) enables the Translate tab and the semantic review in Translation Audit |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for translation and semantic review |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for translation and semantic review |
 
 ### Local model instead of OpenAI
 
-Any OpenAI-compatible server works, including a fully local one. With the bundled Ollama service:
+No key needed — one command starts the stack with a bundled Ollama container, wires the API to it and downloads the model:
 
 ```bash
-docker compose --profile local-ai up -d
-docker compose exec ollama ollama pull qwen2.5:7b-instruct
-OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://ollama:11434/v1 OPENAI_MODEL=qwen2.5:7b-instruct \
-  docker compose --profile local-ai up -d
+./scripts/local-ai.sh
 ```
 
-Nothing leaves the machine, which matters for confidential legal documents. On CPU expect roughly half a minute per handful of paragraphs; a GPU host is much faster.
+Use another model with `OPENAI_MODEL=llama3.1:8b ./scripts/local-ai.sh`. Nothing leaves the machine, which matters for confidential legal documents. On CPU expect roughly half a minute per handful of paragraphs; a GPU host is much faster.
 
-Without `OPENAI_API_KEY` the audit runs deterministic checks only: they catch mechanical errors (omissions, numbers, links, leftover Arabic, inconsistent terms) but cannot judge meaning.
+To go back to the hosted provider (or any other OpenAI-compatible server), run `docker compose up -d` with `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL`/`OPENAI_MODEL`) set.
+
+With neither `OPENAI_API_KEY` nor `OPENAI_BASE_URL` the audit runs deterministic checks only: they catch mechanical errors (omissions, numbers, links, leftover Arabic, inconsistent terms) but cannot judge meaning.
 
 ## API
 

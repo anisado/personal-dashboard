@@ -61,7 +61,7 @@ router.post('/translate', upload.single('source'), async (req, res, next) => {
     return res.status(400).json({ error: `${file.originalname} is not a .docx file` });
   }
   if (!translatorConfigured()) {
-    return res.status(503).json({ error: 'Translation is unavailable — set OPENAI_API_KEY on the API' });
+    return res.status(503).json({ error: 'Translation is unavailable — start the API with a model: ./scripts/local-ai.sh' });
   }
 
   try {

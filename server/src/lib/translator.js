@@ -11,14 +11,13 @@ Translate each numbered paragraph faithfully and completely:
 Respond with JSON only: {"translations":[{"index":number,"text":string}]} covering every paragraph you were given.`;
 
 export function translatorConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY);
+  return Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
 }
 
 function config() {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+  if (!translatorConfigured()) throw new Error('No OpenAI-compatible endpoint is configured');
   return {
-    apiKey,
+    apiKey: process.env.OPENAI_API_KEY || 'local',
     baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
   };
