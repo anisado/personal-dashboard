@@ -1,8 +1,6 @@
-const BATCH_SIZE = 12;
+import { requireProvider } from './provider.js';
 
-export function llmConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
-}
+const BATCH_SIZE = 12;
 
 const SYSTEM_PROMPT = `You audit Arabic-to-English translations. For each numbered segment you receive the Arabic source and its English translation.
 Report only real problems: mistranslation, omitted or added meaning, wrong terminology, wrong numbers/names/dates, grammar that changes meaning, or tone that misrepresents the source.
@@ -43,10 +41,7 @@ async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
 }
 
 export async function reviewSegments(segments) {
-  if (!llmConfigured()) throw new Error('No OpenAI-compatible endpoint is configured');
-  const apiKey = process.env.OPENAI_API_KEY || 'local';
-  const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const { apiKey, baseUrl, model } = await requireProvider();
 
   const candidates = segments.filter((segment) => segment.source && segment.target);
   const controller = new AbortController();

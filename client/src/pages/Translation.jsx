@@ -88,7 +88,7 @@ export default function Translation() {
               <span className={config.llmAvailable ? '' : 'muted'}>
                 {config.llmAvailable
                   ? `Add semantic review (${config.model})`
-                  : 'Semantic review unavailable — start the API with a model: ./scripts/local-ai.sh'}
+                  : 'Semantic review unavailable — no model reachable'}
               </span>
             </label>
             <button type="submit" disabled={pending}>

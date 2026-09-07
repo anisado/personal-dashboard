@@ -12,9 +12,11 @@ export default function Translate() {
   const sourceRef = useRef(null);
 
   const loadHistory = () => api.get('/translation/translations').then(setHistory).catch(() => {});
+  const loadConfig = (refresh = false) =>
+    api.get(`/translation/config${refresh ? '?refresh=true' : ''}`).then(setConfig).catch(() => {});
 
   useEffect(() => {
-    api.get('/translation/config').then(setConfig).catch(() => {});
+    loadConfig();
     loadHistory();
   }, []);
 
@@ -82,9 +84,14 @@ export default function Translate() {
           <div className="row">
             <span className={config.translationAvailable ? 'muted' : ''}>
               {config.translationAvailable
-                ? `Engine: ${config.model}`
-                : 'Translation unavailable — start the API with a model: ./scripts/local-ai.sh'}
+                ? `Engine: ${config.model} (${config.endpoint})`
+                : 'No model reachable — start Ollama (ollama serve) or set OPENAI_API_KEY'}
             </span>
+            {config.translationAvailable ? null : (
+              <button type="button" onClick={() => loadConfig(true)}>
+                Retry detection
+              </button>
+            )}
             <button type="submit" disabled={pending || !config.translationAvailable}>
               {pending ? 'translating…' : 'Translate document'}
             </button>

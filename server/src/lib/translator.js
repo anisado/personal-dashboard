@@ -1,3 +1,5 @@
+import { requireProvider } from './provider.js';
+
 const BATCH_SIZE = 8;
 const TIMEOUT_MS = 180_000;
 
@@ -9,19 +11,6 @@ Translate each numbered paragraph faithfully and completely:
 - use standard legal English terminology (e.g. "الطرف الأول" -> "the First Party", "بموجب" -> "pursuant to") and keep every term rendered identically throughout the document;
 - keep numbering, article headings and list markers in place.
 Respond with JSON only: {"translations":[{"index":number,"text":string}]} covering every paragraph you were given.`;
-
-export function translatorConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
-}
-
-function config() {
-  if (!translatorConfigured()) throw new Error('No OpenAI-compatible endpoint is configured');
-  return {
-    apiKey: process.env.OPENAI_API_KEY || 'local',
-    baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
-  };
-}
 
 async function translateBatch(batch, glossary, { apiKey, baseUrl, model, signal }) {
   const glossaryLines = Object.entries(glossary).slice(0, 80);
@@ -62,7 +51,7 @@ async function translateBatch(batch, glossary, { apiKey, baseUrl, model, signal 
  * running glossary forward so recurring legal terms stay consistent.
  */
 export async function translateParagraphs(paragraphs, { glossary = {} } = {}) {
-  const settings = config();
+  const settings = await requireProvider();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const items = paragraphs.map((source, index) => ({ index: index + 1, source }));

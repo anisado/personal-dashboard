@@ -50,14 +50,9 @@ Environment variables:
 
 ### Local model instead of OpenAI
 
-No key needed. If Ollama is already installed on your machine, just point the stack at it:
+No key and no configuration needed: if Ollama (or any OpenAI-compatible server on port 11434/1234) is running on your machine, the API finds it on its own and the Translate tab shows which model it picked. `docker compose up -d` is enough.
 
-```bash
-OPENAI_BASE_URL=http://host.docker.internal:11434/v1 OPENAI_MODEL=qwen2.5:7b-instruct \
-  docker compose up -d
-```
-
-On Linux the host Ollama must accept connections from containers, i.e. run with `OLLAMA_HOST=0.0.0.0` (`sudo systemctl edit ollama` → `Environment="OLLAMA_HOST=0.0.0.0"`).
+On Linux the host Ollama must accept connections from containers, i.e. run with `OLLAMA_HOST=0.0.0.0` (`sudo systemctl edit ollama` → `Environment="OLLAMA_HOST=0.0.0.0"`, then `sudo systemctl restart ollama`). Set `OPENAI_BASE_URL`/`OPENAI_MODEL` only to override the auto-detected choice.
 
 If you don't have Ollama, one command runs it in a container instead, wires the API to it and downloads the model:
 

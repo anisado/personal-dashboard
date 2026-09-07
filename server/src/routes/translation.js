@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { buildDocx, extractParagraphs } from '../lib/docx.js';
-import { llmConfigured, reviewSegments } from '../lib/llmReview.js';
+import { reviewSegments } from '../lib/llmReview.js';
+import { resolveProvider } from '../lib/provider.js';
 import { auditTranslation } from '../lib/translationAudit.js';
-import { translateParagraphs, translatorConfigured } from '../lib/translator.js';
+import { translateParagraphs } from '../lib/translator.js';
 import * as store from '../store.js';
 
 const upload = multer({
@@ -15,11 +16,15 @@ const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingm
 
 const router = Router();
 
-router.get('/config', (req, res) => {
+const UNAVAILABLE = 'No model reachable — start Ollama (ollama serve) or set OPENAI_API_KEY';
+
+router.get('/config', async (req, res) => {
+  const provider = await resolveProvider({ force: req.query.refresh === 'true' });
   res.json({
-    llmAvailable: llmConfigured(),
-    translationAvailable: translatorConfigured(),
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    llmAvailable: Boolean(provider),
+    translationAvailable: Boolean(provider),
+    model: provider?.model ?? null,
+    endpoint: provider?.baseUrl ?? null
   });
 });
 
@@ -60,8 +65,8 @@ router.post('/translate', upload.single('source'), async (req, res, next) => {
   if (file.mimetype !== DOCX_MIME && !file.originalname.toLowerCase().endsWith('.docx')) {
     return res.status(400).json({ error: `${file.originalname} is not a .docx file` });
   }
-  if (!translatorConfigured()) {
-    return res.status(503).json({ error: 'Translation is unavailable — start the API with a model: ./scripts/local-ai.sh' });
+  if (!(await resolveProvider())) {
+    return res.status(503).json({ error: UNAVAILABLE });
   }
 
   try {
@@ -137,7 +142,7 @@ router.post(
 
       const result = auditTranslation(sourceParagraphs, targetParagraphs);
       result.files = { source: source.originalname, target: target.originalname };
-      result.llm = { requested: req.query.llm === 'true', available: llmConfigured() };
+      result.llm = { requested: req.query.llm === 'true', available: Boolean(await resolveProvider()) };
 
       if (result.llm.requested && result.llm.available) {
         try {
