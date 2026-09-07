@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 
-const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 };
+const SEVERITY_ORDER = { high: 0, medium: 1, low: 2, info: 3 };
 
 function severityClass(severity) {
-  return severity === 'high' ? 'pill high' : severity === 'medium' ? 'pill medium' : 'pill low';
+  if (severity === 'high') return 'pill high';
+  if (severity === 'medium') return 'pill medium';
+  return severity === 'info' ? 'pill' : 'pill low';
 }
 
 export default function Translation() {
@@ -118,7 +120,7 @@ export default function Translation() {
                 {result.summary.sourceParagraphs} AR / {result.summary.targetParagraphs} EN paragraphs ·{' '}
                 {result.summary.alignment === 'paragraph-parallel'
                   ? '1:1 paragraph match'
-                  : 'heuristic alignment — pairings may be approximate'}
+                  : `heuristic alignment · ${result.summary.uncertainSegments} pair(s) need a manual look`}
               </p>
             </Card>
             <Card title="Words">

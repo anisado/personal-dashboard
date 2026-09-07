@@ -44,7 +44,7 @@ async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
 export async function reviewSegments(segments) {
   const { apiKey, baseUrl, model } = await requireProvider();
 
-  const candidates = segments.filter((segment) => segment.source && segment.target);
+  const candidates = segments.filter((segment) => segment.source && segment.target && segment.confident !== false);
   const issues = [];
 
   for (let start = 0; start < candidates.length; start += BATCH_SIZE) {

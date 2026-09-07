@@ -2,7 +2,11 @@ const ARABIC_LETTERS = /[\u0621-\u064A\u066E-\u06D3]/;
 const ARABIC_DIACRITICS = /[\u064B-\u0652\u0670\u0640]/g;
 const LATIN_LETTERS = /[A-Za-z]/;
 
-const SEVERITY_WEIGHT = { high: 12, medium: 5, low: 2 };
+const SEVERITY_WEIGHT = { high: 12, medium: 5, low: 2, info: 0 };
+
+// Above this length deviation a pair is treated as guesswork: the mechanical
+// checks would compare unrelated text and invent issues.
+const MAX_TRUSTED_DEVIATION = 0.8;
 
 export function normalizeDigits(text) {
   return text.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (digit) => {
@@ -106,9 +110,20 @@ export function alignSegments(sourceParagraphs, targetParagraphs, expectedRatio 
     const previous = back[i][j];
     if (!previous) break;
     const [pi, pj] = previous;
+    const sourceSlice = sourceParagraphs.slice(pi, i);
+    const targetSlice = targetParagraphs.slice(pj, j);
+    const sourceLength = sourceSlice.reduce((sum, text) => sum + tokenLength(text), 0);
+    const targetLength = targetSlice.reduce((sum, text) => sum + tokenLength(text), 0);
+    const deviation =
+      sourceLength > 0 && targetLength > 0
+        ? Math.abs(Math.log(targetLength / Math.max(sourceLength * expectedRatio, 0.5)))
+        : 0;
     pairs.push({
-      source: sourceParagraphs.slice(pi, i).join(' '),
-      target: targetParagraphs.slice(pj, j).join(' ')
+      source: sourceSlice.join(' '),
+      target: targetSlice.join(' '),
+      // one Arabic paragraph against one English paragraph, of plausible
+      // length, is the only pairing worth running mechanical checks on
+      confident: sourceSlice.length <= 1 && targetSlice.length <= 1 && deviation <= MAX_TRUSTED_DEVIATION
     });
     i = pi;
     j = pj;
@@ -130,6 +145,32 @@ function checkSegment(segment, context) {
     return issues;
   }
 
+  if (segment.confident === false) {
+    add(
+      'uncertain_alignment',
+      'info',
+      'Paragraphs could not be matched reliably — compare this pair by hand',
+      'automatic checks skipped to avoid false alarms'
+    );
+    if (ARABIC_LETTERS.test(target) && stripDiacritics(source) !== stripDiacritics(target)) {
+      const leftovers = target.match(/[\u0600-\u06FF\u0750-\u077F]+/g) || [];
+      add('untranslated_text', 'high', 'Arabic script left inside the English translation', leftovers.join(' '));
+    }
+    // a source number absent from the whole translation is missing regardless
+    // of how the paragraphs line up; extra English numbers are not, since bad
+    // pairing pulls in headings and numbering from elsewhere
+    const dropped = numbersIn(source).filter((value) => !context.targetNumbers.has(value));
+    if (dropped.length) {
+      add('number_mismatch', 'high', 'Numbers from the Arabic are absent from the whole translation', `missing in English: ${dropped.join(', ')}`);
+    }
+    // grouped pairs are still comparable in bulk, so a large shortfall is real
+    const expected = Math.round(tokenLength(source) * context.expectedRatio);
+    if (tokenLength(source) >= 8 && tokenLength(target) < expected * 0.5) {
+      add('possible_omission', 'medium', 'Grouped paragraphs are much shorter in English', `${tokenLength(target)} vs ~${expected} words`);
+    }
+    return issues;
+  }
+
   if (stripDiacritics(source) === stripDiacritics(target)) {
     add('untranslated_text', 'high', 'English segment is identical to the Arabic source');
   } else if (ARABIC_LETTERS.test(target)) {
@@ -140,6 +181,10 @@ function checkSegment(segment, context) {
   }
 
   const numbers = multisetDiff(numbersIn(source), numbersIn(target));
+  // a number that turns up elsewhere in the other document is alignment drift,
+  // not a translation error
+  numbers.missing = numbers.missing.filter((value) => !context.targetNumbers.has(value));
+  numbers.added = numbers.added.filter((value) => !context.sourceNumbers.has(value));
   if (numbers.missing.length || numbers.added.length) {
     add(
       'number_mismatch',
@@ -175,7 +220,7 @@ function checkSegment(segment, context) {
     }
   }
 
-  if (/[.!?،؛:]$/.test(source) && !/[.!?:;]$/.test(target)) {
+  if (tokenLength(source) >= 6 && /[.!?،؛:]$/.test(source) && !/[.!?:;]$/.test(target)) {
     add('punctuation', 'low', 'Sentence-final punctuation missing in the translation');
   }
 
@@ -198,7 +243,7 @@ function consistencyIssues(segments) {
   const issues = [];
 
   for (const segment of segments) {
-    if (!segment.source || !segment.target) continue;
+    if (!segment.source || !segment.target || segment.confident === false) continue;
     const sourceKey = stripDiacritics(segment.source).toLowerCase();
     const targetKey = segment.target.toLowerCase();
     if (!bySource.has(sourceKey)) bySource.set(sourceKey, new Map());
@@ -243,9 +288,18 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
 
   const parallel = sourceParagraphs.length === targetParagraphs.length;
   const segments = parallel
-    ? sourceParagraphs.map((source, index) => ({ index: index + 1, source, target: targetParagraphs[index] }))
+    ? sourceParagraphs.map((source, index) => ({
+        index: index + 1,
+        source,
+        target: targetParagraphs[index],
+        confident: true
+      }))
     : alignSegments(sourceParagraphs, targetParagraphs, expectedRatio);
-  const context = { expectedRatio };
+  const context = {
+    expectedRatio,
+    sourceNumbers: new Set(numbersIn(sourceParagraphs.join(' '))),
+    targetNumbers: new Set(numbersIn(targetParagraphs.join(' ')))
+  };
 
   const issues = [];
   for (const segment of segments) {
@@ -256,10 +310,11 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
   issues.push(...consistencyIssues(segments));
   issues.sort((a, b) => a.segmentIndex - b.segmentIndex);
 
+  const uncertain = segments.filter((segment) => segment.confident === false).length;
   const penalty = issues.reduce((sum, issue) => sum + SEVERITY_WEIGHT[issue.severity], 0);
   const score = Math.max(0, Math.round(100 - (100 * penalty) / Math.max(segments.length * 12, 12)));
 
-  const bySeverity = { high: 0, medium: 0, low: 0 };
+  const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
   const byType = {};
   for (const issue of issues) {
     bySeverity[issue.severity] += 1;
@@ -269,7 +324,14 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
   return {
     summary: {
       score,
-      verdict: score >= 85 ? 'looks solid' : score >= 60 ? 'needs review' : 'significant problems',
+      verdict:
+        score >= 85
+          ? uncertain > 0
+            ? 'looks solid, check the unmatched paragraphs'
+            : 'looks solid'
+          : score >= 60
+            ? 'needs review'
+            : 'significant problems',
       segments: segments.length,
       sourceParagraphs: sourceParagraphs.length,
       targetParagraphs: targetParagraphs.length,
@@ -277,6 +339,7 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
       targetWords,
       expansionRatio: Number(expectedRatio.toFixed(2)),
       alignment: parallel ? 'paragraph-parallel' : 'heuristic',
+      uncertainSegments: uncertain,
       issues: issues.length,
       bySeverity,
       byType
