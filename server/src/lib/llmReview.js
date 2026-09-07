@@ -12,9 +12,20 @@ Grade every segment you are given:
 - "major": meaning is distorted, something material is missing or added.
 - "wrong": the English does not translate this Arabic at all.
 Judge meaning, not style. Do not invent problems; an idiomatic, complete rendering is "accurate".
+For every issue, quote the exact words, numbers or dates that need revision: "sourceSpan" copied verbatim from the Arabic and "targetSpan" copied verbatim from the English (use "" when the problem is a pure omission or addition on that side).
+When a segment is rated "major" or "wrong", also give "fix": a corrected English rendering of the whole segment.
 Respond with JSON only:
-{"segments":[{"index":number,"rating":"accurate"|"minor"|"major"|"wrong","note":string,"issues":[{"severity":"high"|"medium"|"low","type":"mistranslation"|"omission"|"addition"|"terminology"|"grammar"|"tone","message":string,"suggestion":string}]}]}
+{"segments":[{"index":number,"rating":"accurate"|"minor"|"major"|"wrong","note":string,"fix":string,"issues":[{"severity":"high"|"medium"|"low","type":"mistranslation"|"omission"|"addition"|"terminology"|"grammar"|"tone","message":string,"sourceSpan":string,"targetSpan":string,"suggestion":string}]}]}
 Grade every index in the batch. Leave "issues" empty for accurate segments and keep "note" short (or empty when accurate).`;
+
+/** Spans are only useful if the model quoted the text verbatim; drop anything it paraphrased. */
+function verifySpan(span, text) {
+  const value = String(span || '').trim();
+  if (!value || value.length < 2) return null;
+  if (text.includes(value)) return value;
+  const match = text.match(new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  return match ? match[0] : null;
+}
 
 async function reviewBatch(batch, { apiKey, baseUrl, model, signal }) {
   const body = {
@@ -66,7 +77,13 @@ export async function reviewSegments(segments) {
         const index = Number(graded.index);
         if (!batchIndexes.has(index)) continue;
         const rating = RATINGS.includes(graded.rating) ? graded.rating : 'minor';
-        ratings.push({ segmentIndex: index, rating, note: String(graded.note || '').slice(0, 500) });
+        const segment = batch.find((candidate) => candidate.index === index);
+        ratings.push({
+          segmentIndex: index,
+          rating,
+          note: String(graded.note || '').slice(0, 500),
+          fix: rating === 'major' || rating === 'wrong' ? String(graded.fix || '').slice(0, 2000) : ''
+        });
         for (const issue of Array.isArray(graded.issues) ? graded.issues : []) {
           issues.push({
             segmentIndex: index,
@@ -74,6 +91,10 @@ export async function reviewSegments(segments) {
             severity: ['high', 'medium', 'low'].includes(issue.severity) ? issue.severity : 'medium',
             message: String(issue.message || '').slice(0, 500),
             detail: issue.suggestion ? `suggestion: ${String(issue.suggestion).slice(0, 500)}` : undefined,
+            spans: {
+              source: [verifySpan(issue.sourceSpan, segment?.source ?? '')].filter(Boolean),
+              target: [verifySpan(issue.targetSpan, segment?.target ?? '')].filter(Boolean)
+            },
             source: 'llm'
           });
         }

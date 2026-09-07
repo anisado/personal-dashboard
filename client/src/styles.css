@@ -359,6 +359,14 @@ button.ghost:hover {
   line-height: 1.8;
 }
 
+mark {
+  background: rgba(210, 153, 34, 0.28);
+  color: inherit;
+  border-bottom: 1px solid var(--amber);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 @media (max-width: 900px) {
   .segment {
     grid-template-columns: 1fr;

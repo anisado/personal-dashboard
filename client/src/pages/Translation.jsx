@@ -17,6 +17,19 @@ function ratingClass(rating) {
   return rating === 'major' ? 'pill medium' : 'pill high';
 }
 
+function highlight(text, spans) {
+  const unique = [...new Set(spans.filter(Boolean))].sort((a, b) => b.length - a.length);
+  if (!text || unique.length === 0) return text;
+  const pattern = new RegExp(`(${unique.map((span) => span.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi');
+  return text.split(pattern).map((part, index) =>
+    unique.some((span) => span.toLowerCase() === part.toLowerCase()) ? (
+      <mark key={index}>{part}</mark>
+    ) : (
+      part
+    )
+  );
+}
+
 function severityClass(severity) {
   if (severity === 'high') return 'pill high';
   if (severity === 'medium') return 'pill medium';
@@ -31,6 +44,7 @@ export default function Translation() {
   const [error, setError] = useState(null);
   const [pending, setPending] = useState(false);
   const [filter, setFilter] = useState('issues');
+  const [retranslated, setRetranslated] = useState({});
   const sourceRef = useRef(null);
   const targetRef = useRef(null);
 
@@ -78,6 +92,16 @@ export default function Translation() {
       )
     : [];
   const quality = result?.summary?.quality;
+
+  const retranslate = async (segment) => {
+    setRetranslated((current) => ({ ...current, [segment.index]: { pending: true } }));
+    try {
+      const data = await api.post('/translation/retranslate', { source: segment.source });
+      setRetranslated((current) => ({ ...current, [segment.index]: { text: data.target } }));
+    } catch (err) {
+      setRetranslated((current) => ({ ...current, [segment.index]: { error: err.message } }));
+    }
+  };
 
   return (
     <Page title="Translation Audit" subtitle="Upload the Arabic original and its English translation to review the work.">
@@ -205,10 +229,43 @@ export default function Translation() {
                 )}
                 <div className="segment">
                   <p className="arabic" dir="rtl" lang="ar">
-                    {segment.source || <span className="muted">— no Arabic source —</span>}
+                    {segment.source ? (
+                      highlight(segment.source, segment.issues.flatMap((issue) => issue.spans?.source || []))
+                    ) : (
+                      <span className="muted">— no Arabic source —</span>
+                    )}
                   </p>
-                  <p lang="en">{segment.target || <span className="muted">— no English translation —</span>}</p>
+                  <p lang="en">
+                    {segment.target ? (
+                      highlight(segment.target, segment.issues.flatMap((issue) => issue.spans?.target || []))
+                    ) : (
+                      <span className="muted">— no English translation —</span>
+                    )}
+                  </p>
                 </div>
+                {(segment.rating === 'major' || segment.rating === 'wrong') && (
+                  <div className="form-stack">
+                    {segment.fix && (
+                      <p>
+                        <span className="tag">suggested</span> {segment.fix}
+                      </p>
+                    )}
+                    <div className="row">
+                      <button type="button" onClick={() => retranslate(segment)} disabled={retranslated[segment.index]?.pending}>
+                        {retranslated[segment.index]?.pending ? 'retranslating…' : 'Retranslate this segment'}
+                      </button>
+                      {retranslated[segment.index]?.text && (
+                        <button type="button" onClick={() => navigator.clipboard?.writeText(retranslated[segment.index].text)}>
+                          Copy new translation
+                        </button>
+                      )}
+                    </div>
+                    {retranslated[segment.index]?.text && <p lang="en">{retranslated[segment.index].text}</p>}
+                    {retranslated[segment.index]?.error && (
+                      <p className="muted">{retranslated[segment.index].error}</p>
+                    )}
+                  </div>
+                )}
                 <ul className="list">
                   {[...segment.issues]
                     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])

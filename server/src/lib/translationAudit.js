@@ -52,6 +52,21 @@ function splitClauses(paragraphs) {
   );
 }
 
+const toArabicIndic = (value) => value.replace(/\d/g, (digit) => String.fromCharCode(0x0660 + Number(digit)));
+
+/** The literal form of a normalized number as it appears in `text`, for highlighting. */
+function spanFor(text, value) {
+  if (text.includes(value)) return value;
+  const arabic = toArabicIndic(value);
+  if (text.includes(arabic)) return arabic;
+  const grouped = value.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return text.includes(grouped) ? grouped : null;
+}
+
+function spansFor(text, values) {
+  return values.map((value) => spanFor(text, value)).filter(Boolean);
+}
+
 function multisetDiff(a, b) {
   const counts = new Map();
   for (const value of a) counts.set(value, (counts.get(value) || 0) + 1);
@@ -148,7 +163,7 @@ export function alignSegments(sourceParagraphs, targetParagraphs, expectedRatio 
 function checkSegment(segment, context) {
   const issues = [];
   const { source, target } = segment;
-  const add = (type, severity, message, detail) => issues.push({ type, severity, message, detail });
+  const add = (type, severity, message, detail, spans) => issues.push({ type, severity, message, detail, spans });
 
   if (source && !target) {
     add('missing_translation', 'high', 'Arabic paragraph has no English counterpart');
@@ -168,14 +183,22 @@ function checkSegment(segment, context) {
     );
     if (ARABIC_LETTERS.test(target) && stripDiacritics(source) !== stripDiacritics(target)) {
       const leftovers = target.match(/[\u0600-\u06FF\u0750-\u077F]+/g) || [];
-      add('untranslated_text', 'high', 'Arabic script left inside the English translation', leftovers.join(' '));
+      add('untranslated_text', 'high', 'Arabic script left inside the English translation', leftovers.join(' '), {
+        target: leftovers
+      });
     }
     // a source number absent from the whole translation is missing regardless
     // of how the paragraphs line up; extra English numbers are not, since bad
     // pairing pulls in headings and numbering from elsewhere
     const dropped = numbersIn(source).filter((value) => !context.targetNumbers.has(value));
     if (dropped.length) {
-      add('number_mismatch', 'high', 'Numbers from the Arabic are absent from the whole translation', `missing in English: ${dropped.join(', ')}`);
+      add(
+        'number_mismatch',
+        'high',
+        'Numbers from the Arabic are absent from the whole translation',
+        `missing in English: ${dropped.join(', ')}`,
+        { source: spansFor(source, dropped) }
+      );
     }
     // grouped pairs are still comparable in bulk, so a large shortfall is real
     const expected = Math.round(tokenLength(source) * context.expectedRatio);
@@ -189,7 +212,9 @@ function checkSegment(segment, context) {
     add('untranslated_text', 'high', 'English segment is identical to the Arabic source');
   } else if (ARABIC_LETTERS.test(target)) {
     const leftovers = target.match(/[\u0600-\u06FF\u0750-\u077F]+/g) || [];
-    add('untranslated_text', 'high', 'Arabic script left inside the English translation', leftovers.join(' '));
+    add('untranslated_text', 'high', 'Arabic script left inside the English translation', leftovers.join(' '), {
+      target: leftovers
+    });
   } else if (!LATIN_LETTERS.test(target)) {
     add('untranslated_text', 'medium', 'English segment contains no Latin letters');
   }
@@ -209,7 +234,8 @@ function checkSegment(segment, context) {
         numbers.added.length ? `not in Arabic: ${numbers.added.join(', ')}` : ''
       ]
         .filter(Boolean)
-        .join(' · ')
+        .join(' · '),
+      { source: spansFor(source, numbers.missing), target: spansFor(target, numbers.added) }
     );
   }
 
@@ -219,7 +245,8 @@ function checkSegment(segment, context) {
       'placeholder_mismatch',
       'medium',
       'URLs, emails or placeholders do not match',
-      [...placeholders.missing, ...placeholders.added].join(', ')
+      [...placeholders.missing, ...placeholders.added].join(', '),
+      { source: placeholders.missing, target: placeholders.added }
     );
   }
 

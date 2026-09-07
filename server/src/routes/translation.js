@@ -106,6 +106,20 @@ router.post('/translate', upload.single('source'), async (req, res, next) => {
   }
 });
 
+router.post('/retranslate', async (req, res, next) => {
+  const source = typeof req.body?.source === 'string' ? req.body.source.trim() : '';
+  if (!source) return res.status(400).json({ error: 'Send the Arabic text as "source"' });
+  if (!(await resolveProvider())) return res.status(503).json({ error: UNAVAILABLE });
+
+  try {
+    const { model, segments } = await translateParagraphs([source]);
+    res.json({ model, target: segments[0]?.target ?? '' });
+  } catch (err) {
+    if (err.name === 'AbortError') return res.status(504).json({ error: 'Retranslation timed out' });
+    next(err);
+  }
+});
+
 router.get('/audits', async (req, res) => {
   res.json(await store.list('audits'));
 });
@@ -159,6 +173,7 @@ router.post(
             if (rating) {
               segment.rating = rating.rating;
               segment.note = rating.note || undefined;
+              segment.fix = rating.fix || undefined;
             }
           }
           result.summary.quality = { ...review.quality, model: review.model };
