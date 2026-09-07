@@ -50,13 +50,22 @@ Environment variables:
 
 ### Local model instead of OpenAI
 
-No key needed — one command starts the stack with a bundled Ollama container, wires the API to it and downloads the model:
+No key needed. If Ollama is already installed on your machine, just point the stack at it:
+
+```bash
+OPENAI_BASE_URL=http://host.docker.internal:11434/v1 OPENAI_MODEL=qwen2.5:7b-instruct \
+  docker compose up -d
+```
+
+On Linux the host Ollama must accept connections from containers, i.e. run with `OLLAMA_HOST=0.0.0.0` (`sudo systemctl edit ollama` → `Environment="OLLAMA_HOST=0.0.0.0"`).
+
+If you don't have Ollama, one command runs it in a container instead, wires the API to it and downloads the model:
 
 ```bash
 ./scripts/local-ai.sh
 ```
 
-Use another model with `OPENAI_MODEL=llama3.1:8b ./scripts/local-ai.sh`. Nothing leaves the machine, which matters for confidential legal documents. On CPU expect roughly half a minute per handful of paragraphs; a GPU host is much faster.
+Either way, use another model with `OPENAI_MODEL=llama3.1:8b`. Nothing leaves the machine, which matters for confidential legal documents. On CPU expect roughly half a minute per handful of paragraphs; a GPU host is much faster.
 
 To go back to the hosted provider (or any other OpenAI-compatible server), run `docker compose up -d` with `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL`/`OPENAI_MODEL`) set.
 

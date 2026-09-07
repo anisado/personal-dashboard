@@ -7,6 +7,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
+    extra_hosts:
+      # lets the container reach a model server running on the host
+      - 'host.docker.internal:host-gateway'
     volumes:
       - dashboard-data:/app/data
     expose:
