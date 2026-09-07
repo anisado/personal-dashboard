@@ -120,7 +120,9 @@ export default function Translation() {
                 {result.summary.sourceParagraphs} AR / {result.summary.targetParagraphs} EN paragraphs ·{' '}
                 {result.summary.alignment === 'paragraph-parallel'
                   ? '1:1 paragraph match'
-                  : `heuristic alignment · ${result.summary.uncertainSegments} pair(s) need a manual look`}
+                  : `${result.summary.alignment === 'clause-level' ? 'clause-level' : 'heuristic'} alignment · ${
+                      result.summary.uncertainSegments
+                    } pair(s) need a manual look`}
               </p>
             </Card>
             <Card title="Words">

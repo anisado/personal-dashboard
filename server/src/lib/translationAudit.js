@@ -38,6 +38,20 @@ function tokenLength(text) {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
+/**
+ * Legal documents keep long enumerations (whereas-clauses, article lists) in a
+ * single paragraph on one side and one paragraph per clause on the other.
+ * Cutting both sides on clause delimiters gives the aligner comparable units.
+ */
+function splitClauses(paragraphs) {
+  return paragraphs.flatMap((paragraph) =>
+    paragraph
+      .split(/(?<=[؛;])\s*/)
+      .map((clause) => clause.trim())
+      .filter(Boolean)
+  );
+}
+
 function multisetDiff(a, b) {
   const counts = new Map();
   for (const value of a) counts.set(value, (counts.get(value) || 0) + 1);
@@ -287,6 +301,9 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
   const expectedRatio = sourceWords > 0 ? Math.min(Math.max(targetWords / sourceWords, 0.6), 1.6) : 1;
 
   const parallel = sourceParagraphs.length === targetParagraphs.length;
+  const sourceUnits = splitClauses(sourceParagraphs);
+  const targetUnits = splitClauses(targetParagraphs);
+  const split = !parallel && (sourceUnits.length > sourceParagraphs.length || targetUnits.length > targetParagraphs.length);
   const segments = parallel
     ? sourceParagraphs.map((source, index) => ({
         index: index + 1,
@@ -294,7 +311,9 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
         target: targetParagraphs[index],
         confident: true
       }))
-    : alignSegments(sourceParagraphs, targetParagraphs, expectedRatio);
+    : split
+      ? alignSegments(sourceUnits, targetUnits, expectedRatio)
+      : alignSegments(sourceParagraphs, targetParagraphs, expectedRatio);
   const context = {
     expectedRatio,
     sourceNumbers: new Set(numbersIn(sourceParagraphs.join(' '))),
@@ -338,7 +357,7 @@ export function auditTranslation(sourceParagraphs, targetParagraphs) {
       sourceWords,
       targetWords,
       expansionRatio: Number(expectedRatio.toFixed(2)),
-      alignment: parallel ? 'paragraph-parallel' : 'heuristic',
+      alignment: parallel ? 'paragraph-parallel' : split ? 'clause-level' : 'heuristic',
       uncertainSegments: uncertain,
       issues: issues.length,
       bySeverity,
