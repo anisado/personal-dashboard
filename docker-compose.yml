@@ -4,6 +4,9 @@ services:
     environment:
       PORT: 4000
       DATA_DIR: /app/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     volumes:
       - dashboard-data:/app/data
     expose:

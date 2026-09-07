@@ -5,6 +5,7 @@ import Notes from './pages/Notes.jsx';
 import Overview from './pages/Overview.jsx';
 import Snippets from './pages/Snippets.jsx';
 import Tasks from './pages/Tasks.jsx';
+import Translation from './pages/Translation.jsx';
 import Tools from './pages/Tools.jsx';
 
 const NAV = [
@@ -14,6 +15,7 @@ const NAV = [
   { to: '/snippets', label: 'Snippets', icon: '{}' },
   { to: '/bookmarks', label: 'Bookmarks', icon: '★' },
   { to: '/environments', label: 'Environments', icon: '⛁' },
+  { to: '/translation', label: 'Translation Audit', icon: '⇄' },
   { to: '/tools', label: 'Dev Tools', icon: '⚙' }
 ];
 
@@ -46,6 +48,7 @@ export default function App() {
           <Route path="/snippets" element={<Snippets />} />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/environments" element={<Environments />} />
+          <Route path="/translation" element={<Translation />} />
           <Route path="/tools" element={<Tools />} />
           <Route path="*" element={<Navigate to="/overview" replace />} />
         </Routes>

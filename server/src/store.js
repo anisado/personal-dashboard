@@ -10,7 +10,8 @@ const EMPTY_DB = {
   notes: [],
   snippets: [],
   bookmarks: [],
-  environments: []
+  environments: [],
+  audits: []
 };
 
 let db = null;
@@ -82,6 +83,7 @@ export async function stats() {
     notes: data.notes.length,
     snippets: data.snippets.length,
     bookmarks: data.bookmarks.length,
-    environments: data.environments.length
+    environments: data.environments.length,
+    audits: data.audits.length
   };
 }

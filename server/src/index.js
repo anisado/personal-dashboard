@@ -10,6 +10,7 @@ import {
   taskSanitizer
 } from './routes/crud.js';
 import toolsRouter from './routes/tools.js';
+import translationRouter from './routes/translation.js';
 import * as store from './store.js';
 
 const app = express();
@@ -33,10 +34,12 @@ app.use('/api/snippets', crudRouter('snippets', snippetSanitizer));
 app.use('/api/bookmarks', crudRouter('bookmarks', bookmarkSanitizer));
 app.use('/api/environments', crudRouter('environments', environmentSanitizer));
 app.use('/api/tools', toolsRouter);
+app.use('/api/translation', translationRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
 app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File is larger than 15 MB' });
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });

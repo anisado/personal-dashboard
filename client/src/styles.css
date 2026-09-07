@@ -333,6 +333,38 @@ button.ghost:hover {
   margin: 8px 0;
 }
 
+.file-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.segment {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.segment p {
+  background: #0b0f16;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 0;
+}
+
+.arabic {
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+@media (max-width: 900px) {
+  .segment {
+    grid-template-columns: 1fr;
+  }
+}
+
 .status.up {
   color: var(--green);
 }
