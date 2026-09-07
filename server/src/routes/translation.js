@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { extractParagraphs } from '../lib/docx.js';
+import { buildDocx, extractParagraphs } from '../lib/docx.js';
 import { llmConfigured, reviewSegments } from '../lib/llmReview.js';
 import { auditTranslation } from '../lib/translationAudit.js';
+import { translateParagraphs, translatorConfigured } from '../lib/translator.js';
 import * as store from '../store.js';
 
 const upload = multer({
@@ -15,7 +16,86 @@ const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingm
 const router = Router();
 
 router.get('/config', (req, res) => {
-  res.json({ llmAvailable: llmConfigured(), model: process.env.OPENAI_MODEL || 'gpt-4o-mini' });
+  res.json({
+    llmAvailable: llmConfigured(),
+    translationAvailable: translatorConfigured(),
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+  });
+});
+
+router.get('/translations', async (req, res) => {
+  const translations = await store.list('translations');
+  res.json(translations.map(({ segments, ...rest }) => ({ ...rest, paragraphs: segments.length })));
+});
+
+router.get('/translations/:id', async (req, res) => {
+  const record = await store.get('translations', req.params.id);
+  if (!record) return res.status(404).json({ error: 'Not found' });
+  res.json(record);
+});
+
+router.delete('/translations/:id', async (req, res) => {
+  const deleted = await store.remove('translations', req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Not found' });
+  res.status(204).end();
+});
+
+router.get('/translations/:id/docx', async (req, res, next) => {
+  try {
+    const record = await store.get('translations', req.params.id);
+    if (!record) return res.status(404).json({ error: 'Not found' });
+    const buffer = await buildDocx(record.segments.map((segment) => segment.target).filter(Boolean));
+    const name = record.file.replace(/\.docx$/i, '') || 'translation';
+    res.setHeader('Content-Type', DOCX_MIME);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}-en.docx"`);
+    res.send(buffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/translate', upload.single('source'), async (req, res, next) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'Upload the Arabic document as "source"' });
+  if (file.mimetype !== DOCX_MIME && !file.originalname.toLowerCase().endsWith('.docx')) {
+    return res.status(400).json({ error: `${file.originalname} is not a .docx file` });
+  }
+  if (!translatorConfigured()) {
+    return res.status(503).json({ error: 'Translation is unavailable — set OPENAI_API_KEY on the API' });
+  }
+
+  try {
+    const paragraphs = await extractParagraphs(file.buffer);
+    if (paragraphs.length === 0) {
+      return res.status(400).json({ error: 'The document contains no readable text' });
+    }
+
+    let glossary = {};
+    if (req.body?.glossary) {
+      try {
+        const parsed = JSON.parse(req.body.glossary);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) glossary = parsed;
+      } catch {
+        return res.status(400).json({ error: 'glossary must be a JSON object of Arabic -> English terms' });
+      }
+    }
+
+    const { model, segments } = await translateParagraphs(paragraphs, { glossary });
+    const record = await store.create('translations', {
+      file: file.originalname,
+      model,
+      segments
+    });
+    res.json(record);
+  } catch (err) {
+    if (err.message?.includes('end of central directory')) {
+      return res.status(400).json({ error: 'Could not read the .docx file — is it a real Word document?' });
+    }
+    if (err.name === 'AbortError') {
+      return res.status(504).json({ error: 'Translation timed out — try a shorter document' });
+    }
+    next(err);
+  }
 });
 
 router.get('/audits', async (req, res) => {

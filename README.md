@@ -12,6 +12,7 @@ A personal developer assistant dashboard: React (Vite) frontend, Node/Express AP
 | Snippets | Save code/commands per language, copy to clipboard |
 | Bookmarks | Grouped links by category |
 | Environments | Register services and health-check them (status code + latency) |
+| Translate | Upload an Arabic legal `.docx` and get an English translation paragraph by paragraph (legal register, optional glossary of fixed term renderings), downloadable as `.docx`. Requires `OPENAI_API_KEY` |
 | Translation Audit | Upload the Arabic original and English translation as `.docx`, get aligned side-by-side segments and flagged issues (missing/added content, untranslated text, number, URL/placeholder, length-ratio, punctuation and terminology-consistency problems) with a score and audit history |
 | Dev Tools | HTTP request runner, JSON formatter, JWT decoder, Base64/URL encoder, hash generator (md5/sha1/sha256/sha512), regex tester, cron next-run preview, timestamp converter, UUID generator |
 
@@ -43,9 +44,9 @@ Environment variables:
 | `DATA_DIR` | `./data` | API JSON storage directory |
 | `VITE_API_TARGET` | `http://localhost:4000` | Vite dev proxy target |
 | `VITE_API_BASE` | `/api` | Frontend API base path |
-| `OPENAI_API_KEY` | unset | Enables optional semantic review in Translation Audit (disabled when unset) |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for semantic review |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model used for semantic review |
+| `OPENAI_API_KEY` | unset | Enables the Translate tab and the optional semantic review in Translation Audit (both disabled when unset) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for translation and semantic review |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model used for translation and semantic review |
 
 Without `OPENAI_API_KEY` the audit runs deterministic checks only: they catch mechanical errors (omissions, numbers, links, leftover Arabic, inconsistent terms) but cannot judge meaning.
 
@@ -54,6 +55,8 @@ Without `OPENAI_API_KEY` the audit runs deterministic checks only: they catch me
 `GET /api/health`, `GET /api/stats`
 
 CRUD (`GET` / `POST` / `PATCH /:id` / `DELETE /:id`) for `/api/tasks`, `/api/notes`, `/api/snippets`, `/api/bookmarks`, `/api/environments`.
+
+Translation: `POST /api/translation/translate` (multipart with `source` = Arabic `.docx`, optional `glossary` JSON object), `GET /api/translation/translations`, `GET /api/translation/translations/:id`, `GET /api/translation/translations/:id/docx`, `DELETE /api/translation/translations/:id`.
 
 Translation audit: `POST /api/translation/audit` (multipart with `source` = Arabic `.docx` and `target` = English `.docx`, optional `?llm=true`), `GET /api/translation/config`, `GET /api/translation/audits`, `DELETE /api/translation/audits/:id`. Max 15 MB per file.
 

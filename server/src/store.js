@@ -11,7 +11,8 @@ const EMPTY_DB = {
   snippets: [],
   bookmarks: [],
   environments: [],
-  audits: []
+  audits: [],
+  translations: []
 };
 
 let db = null;
@@ -41,6 +42,11 @@ function persist() {
 export async function list(collection) {
   const data = await load();
   return data[collection];
+}
+
+export async function get(collection, id) {
+  const data = await load();
+  return data[collection].find((entry) => entry.id === id) ?? null;
 }
 
 export async function create(collection, payload) {
@@ -84,6 +90,7 @@ export async function stats() {
     snippets: data.snippets.length,
     bookmarks: data.bookmarks.length,
     environments: data.environments.length,
-    audits: data.audits.length
+    audits: data.audits.length,
+    translations: data.translations.length
   };
 }

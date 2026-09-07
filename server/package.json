@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "docx": "^9.5.1",
     "express": "^4.21.2",
     "mammoth": "^1.12.2",
     "morgan": "^1.10.0",
