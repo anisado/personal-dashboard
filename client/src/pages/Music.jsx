@@ -3,7 +3,7 @@ import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 import { detectBpm } from '../lib/bpm.js';
 
-const PEAK_COUNT = 4000;
+const ENVELOPE_HZ = 1000;
 const MAX_ZOOM = 32;
 
 function clock(seconds) {
@@ -12,22 +12,86 @@ function clock(seconds) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-/** Downsample the decoded audio to one peak per pixel column. */
+/**
+ * One normalised peak per millisecond of audio, so zooming in keeps more
+ * detail than the canvas can show instead of running out of samples.
+ */
 function peaksFrom(buffer) {
   const channel = buffer.getChannelData(0);
-  const perBucket = Math.floor(channel.length / PEAK_COUNT) || 1;
-  const peaks = new Float32Array(PEAK_COUNT);
-  for (let bucket = 0; bucket < PEAK_COUNT; bucket += 1) {
+  const perBucket = Math.max(Math.round(buffer.sampleRate / ENVELOPE_HZ), 1);
+  const peaks = new Float32Array(Math.ceil(channel.length / perBucket));
+  for (let bucket = 0; bucket < peaks.length; bucket += 1) {
     let max = 0;
     const start = bucket * perBucket;
-    for (let offset = 0; offset < perBucket; offset += 1) {
-      const value = Math.abs(channel[start + offset] || 0);
+    const end = Math.min(start + perBucket, channel.length);
+    for (let offset = start; offset < end; offset += 1) {
+      const value = Math.abs(channel[offset]);
       if (value > max) max = value;
     }
     peaks[bucket] = max;
   }
   const loudest = peaks.reduce((max, value) => Math.max(max, value), 0) || 1;
-  return peaks.map((value) => value / loudest);
+  for (let index = 0; index < peaks.length; index += 1) peaks[index] /= loudest;
+  return peaks;
+}
+
+/**
+ * Amplitude for every pixel column of the visible window: the loudest peak in
+ * the column when zoomed out, a linear blend between neighbours when a column
+ * covers less than one peak, so the outline stays smooth at any zoom.
+ */
+function columnAmplitudes(peaks, duration, from, to, columns) {
+  const perSecond = peaks.length / duration;
+  const step = ((to - from) * perSecond) / columns;
+  const amplitudes = new Float32Array(columns);
+
+  for (let column = 0; column < columns; column += 1) {
+    const start = (from + ((to - from) * column) / columns) * perSecond;
+    if (step < 1) {
+      const left = Math.floor(start);
+      const blend = start - left;
+      const a = peaks[Math.min(left, peaks.length - 1)] ?? 0;
+      const b = peaks[Math.min(left + 1, peaks.length - 1)] ?? a;
+      amplitudes[column] = a + (b - a) * blend;
+      continue;
+    }
+    let max = 0;
+    const end = Math.min(Math.ceil(start + step), peaks.length);
+    for (let index = Math.max(Math.floor(start), 0); index < end; index += 1) {
+      if (peaks[index] > max) max = peaks[index];
+    }
+    amplitudes[column] = max;
+  }
+  return amplitudes;
+}
+
+/** Mirror the amplitudes around the centre line as one filled, curved shape. */
+function fillWaveform(context, amplitudes, width, height, style, clip) {
+  const middle = height / 2;
+  const columns = amplitudes.length;
+  const columnWidth = width / (columns - 1 || 1);
+  const y = (column, sign) => middle - sign * Math.max(amplitudes[column] * (middle - 2), 0.75);
+
+  context.save();
+  if (clip) {
+    context.beginPath();
+    context.rect(clip.from, 0, Math.max(clip.to - clip.from, 0), height);
+    context.clip();
+  }
+
+  context.beginPath();
+  context.moveTo(0, y(0, 1));
+  for (let column = 1; column < columns; column += 1) {
+    const x = column * columnWidth;
+    context.quadraticCurveTo(x - columnWidth / 2, y(column - 1, 1), x, y(column, 1));
+  }
+  for (let column = columns - 1; column >= 0; column -= 1) {
+    context.lineTo(column * columnWidth, y(column, -1));
+  }
+  context.closePath();
+  context.fillStyle = style;
+  context.fill();
+  context.restore();
 }
 
 /** Beat ticks every 60/bpm seconds, with a taller line on each bar (4 beats). */
@@ -71,10 +135,9 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
 
-    const total = peaks?.length ?? 0;
     const middle = height / 2;
 
-    if (total === 0 || !duration) {
+    if (!peaks?.length || !duration) {
       context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
       context.beginPath();
       context.moveTo(0, middle);
@@ -86,16 +149,17 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
     const { from, to } = windowFor(progress, duration, zoom);
     drawBeatGrid(context, beat, width, height, from, to);
 
-    const first = Math.floor((from / duration) * total);
-    const last = Math.max(Math.ceil((to / duration) * total), first + 1);
-    const bars = last - first;
-    const barWidth = width / bars;
-    const playedBar = ((progress - from) / (to - from)) * bars;
+    const amplitudes = columnAmplitudes(peaks, duration, from, to, Math.round(width * ratio));
+    const playhead = ((progress - from) / (to - from)) * width;
+    fillWaveform(context, amplitudes, width, height, 'rgba(148, 163, 184, 0.45)');
+    fillWaveform(context, amplitudes, width, height, '#22d3ee', { from: 0, to: playhead });
 
-    for (let index = 0; index < bars; index += 1) {
-      const amplitude = Math.max((peaks[first + index] ?? 0) * (height / 2 - 2), 1);
-      context.fillStyle = index <= playedBar ? '#22d3ee' : 'rgba(148, 163, 184, 0.45)';
-      context.fillRect(index * barWidth, middle - amplitude, Math.max(barWidth - 0.5, 0.5), amplitude * 2);
+    if (playhead >= 0 && playhead <= width) {
+      context.strokeStyle = 'rgba(34, 211, 238, 0.9)';
+      context.beginPath();
+      context.moveTo(playhead, 0);
+      context.lineTo(playhead, height);
+      context.stroke();
     }
   }, [peaks, beat, progress, duration, zoom]);
 
@@ -111,7 +175,7 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
         }}
         onWheel={(event) => {
           if (!duration) return;
-          onZoom(event.deltaY < 0 ? zoom * 2 : zoom / 2);
+          onZoom(event.deltaY < 0 ? zoom * 1.2 : zoom / 1.2);
         }}
       />
       {loading && <span className="waveform-note">reading waveform…</span>}
@@ -139,6 +203,16 @@ export default function Music() {
   const [zoom, setZoom] = useState(1);
   const audioRef = useRef(null);
   const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (!playing) return undefined;
+    let frame = requestAnimationFrame(function tick() {
+      const audio = audioRef.current;
+      if (audio) setProgress({ time: audio.currentTime, duration: audio.duration || 0 });
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
   const load = () => api.get('/music/tracks').then(setTracks).catch((err) => setError(err.message));
 
@@ -378,7 +452,9 @@ export default function Music() {
             <button type="button" onClick={() => changeZoom(zoom * 2)} disabled={!current || zoom >= MAX_ZOOM}>
               + zoom
             </button>
-            <span className="muted">{zoom > 1 ? `${zoom}× around the playhead` : 'whole track'}</span>
+            <span className="muted">
+              {zoom > 1 ? `${zoom.toFixed(1).replace(/\.0$/, '')}× around the playhead` : 'whole track'}
+            </span>
           </div>
 
           <div className="row">
