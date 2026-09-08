@@ -29,7 +29,24 @@ function peaksFrom(buffer) {
   return peaks.map((value) => value / loudest);
 }
 
-function Waveform({ peaks, progress, duration, loading, onSeek }) {
+/** Beat ticks every 60/bpm seconds, with a taller line on each bar (4 beats). */
+function drawBeatGrid(context, beat, width, height, duration) {
+  if (!beat || !duration) return;
+  const period = 60 / beat.bpm;
+  let index = 0;
+  for (let time = beat.offset % period; time < duration; time += period) {
+    const x = (time / duration) * width;
+    const downbeat = index % 4 === 0;
+    context.strokeStyle = downbeat ? 'rgba(226, 232, 240, 0.55)' : 'rgba(148, 163, 184, 0.22)';
+    context.beginPath();
+    context.moveTo(x, downbeat ? 0 : height * 0.12);
+    context.lineTo(x, downbeat ? height : height * 0.88);
+    context.stroke();
+    index += 1;
+  }
+}
+
+function Waveform({ peaks, beat, progress, duration, loading, onSeek }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -58,13 +75,15 @@ function Waveform({ peaks, progress, duration, loading, onSeek }) {
       return;
     }
 
+    drawBeatGrid(context, beat, width, height, duration);
+
     const barWidth = width / bars;
     for (let index = 0; index < bars; index += 1) {
       const amplitude = Math.max(peaks[index] * (height / 2 - 2), 1);
       context.fillStyle = index / bars <= played ? '#22d3ee' : 'rgba(148, 163, 184, 0.45)';
       context.fillRect(index * barWidth, middle - amplitude, Math.max(barWidth - 0.5, 0.5), amplitude * 2);
     }
-  }, [peaks, progress, duration]);
+  }, [peaks, beat, progress, duration]);
 
   return (
     <div className="waveform">
@@ -178,8 +197,8 @@ export default function Music() {
         const tempo = await detectBpm(decoded);
         if (cancelled) return;
         setBpm(tempo);
-        if (tempo && tempo !== current?.bpm) {
-          const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: tempo });
+        if (tempo && tempo.bpm !== current?.bpm) {
+          const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: tempo.bpm });
           setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
         }
       } catch (err) {
@@ -245,7 +264,7 @@ export default function Music() {
     }
   };
 
-  const tempo = bpm ?? current?.bpm ?? null;
+  const tempo = bpm?.bpm ?? current?.bpm ?? null;
   const tempoLabel = tempo ? `${tempo} BPM` : current ? (analysing ? 'detecting BPM…' : 'no steady beat') : 'BPM —';
 
   const seek = (seconds) => {
@@ -313,6 +332,7 @@ export default function Music() {
 
           <Waveform
             peaks={peaks}
+            beat={bpm}
             progress={progress.time}
             duration={progress.duration}
             loading={peaksLoading}

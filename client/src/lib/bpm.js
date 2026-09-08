@@ -51,9 +51,23 @@ function tempoCounts(peaks, sampleRate) {
   return counts;
 }
 
+/** Where the beat grid starts, as the circular mean of the peak phases. */
+function beatOffset(peaks, sampleRate, period) {
+  let x = 0;
+  let y = 0;
+  for (const peak of peaks) {
+    const angle = ((peak / sampleRate) % period) * ((2 * Math.PI) / period);
+    x += Math.cos(angle);
+    y += Math.sin(angle);
+  }
+  const mean = Math.atan2(y, x) / ((2 * Math.PI) / period);
+  return mean < 0 ? mean + period : mean;
+}
+
 /**
- * Estimate the tempo of a decoded track. Returns null when there is no clear
- * beat (speech, ambient recordings, very short clips).
+ * Estimate the tempo of a decoded track, with the offset of the first beat so
+ * a beat grid can be drawn. Returns null when there is no clear beat (speech,
+ * ambient recordings, very short clips).
  */
 export async function detectBpm(buffer) {
   if (buffer.duration < 5) return null;
@@ -86,5 +100,5 @@ export async function detectBpm(buffer) {
 
   // a flat histogram means no tempo was actually found
   if (!best || bestCount / total < 0.05) return null;
-  return best;
+  return { bpm: best, offset: beatOffset(peaks, buffer.sampleRate, 60 / best) };
 }
