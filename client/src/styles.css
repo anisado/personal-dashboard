@@ -265,6 +265,46 @@ button.ghost:hover {
   border-bottom: 1px solid var(--border);
 }
 
+.dropzone {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.dropzone.dragging {
+  border-color: var(--amber);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.waveform {
+  position: relative;
+}
+
+.waveform canvas {
+  width: 100%;
+  height: 120px;
+  display: block;
+  cursor: pointer;
+  background: var(--panel-2);
+  border-radius: 10px;
+}
+
+.waveform-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
 .list li.active {
   background: var(--panel-2);
 }
