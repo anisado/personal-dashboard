@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
+import { detectBpm } from '../lib/bpm.js';
 
 const PEAK_COUNT = 900;
 
@@ -95,6 +96,8 @@ export default function Music() {
   const [search, setSearch] = useState('');
   const [peaks, setPeaks] = useState(null);
   const [peaksLoading, setPeaksLoading] = useState(false);
+  const [bpm, setBpm] = useState(null);
+  const [analysing, setAnalysing] = useState(false);
   const audioRef = useRef(null);
   const fileRef = useRef(null);
 
@@ -153,11 +156,13 @@ export default function Music() {
 
   useEffect(() => {
     setPeaks(null);
+    setBpm(null);
     if (!currentId) return undefined;
 
     let cancelled = false;
     const controller = new AbortController();
     setPeaksLoading(true);
+    setAnalysing(true);
 
     (async () => {
       let context;
@@ -166,12 +171,25 @@ export default function Music() {
         const bytes = await response.arrayBuffer();
         context = new (window.AudioContext || window.webkitAudioContext)();
         const decoded = await context.decodeAudioData(bytes);
-        if (!cancelled) setPeaks(peaksFrom(decoded));
+        if (cancelled) return;
+        setPeaks(peaksFrom(decoded));
+        setPeaksLoading(false);
+
+        const tempo = await detectBpm(decoded);
+        if (cancelled) return;
+        setBpm(tempo);
+        if (tempo && tempo !== current?.bpm) {
+          const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: tempo });
+          setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
+        }
       } catch (err) {
         if (!cancelled && err.name !== 'AbortError') setPeaks(null);
       } finally {
         context?.close();
-        if (!cancelled) setPeaksLoading(false);
+        if (!cancelled) {
+          setPeaksLoading(false);
+          setAnalysing(false);
+        }
       }
     })();
 
@@ -227,6 +245,9 @@ export default function Music() {
     }
   };
 
+  const tempo = bpm ?? current?.bpm ?? null;
+  const tempoLabel = tempo ? `${tempo} BPM` : current ? (analysing ? 'detecting BPM…' : 'no steady beat') : 'BPM —';
+
   const seek = (seconds) => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = seconds;
@@ -268,6 +289,9 @@ export default function Music() {
 
       <Card title={current ? `${current.title}${current.artist ? ` — ${current.artist}` : ''}` : 'Nothing playing'}>
         <div className="form-stack">
+          <div className="row">
+            <span className="tag">{tempoLabel}</span>
+          </div>
           <audio
             ref={audioRef}
             src={current ? `${BASE}/music/tracks/${current.id}/stream` : undefined}
@@ -378,6 +402,7 @@ export default function Music() {
                   }
                   onBlur={(event) => rename(track, 'artist', event.target.value)}
                 />
+                <span className="muted">{track.bpm ? `${track.bpm} BPM` : ''}</span>
                 <span className="muted right">{(track.size / 1024 / 1024).toFixed(1)} MB</span>
                 <button type="button" className="ghost" onClick={() => removeTrack(track)}>
                   delete

@@ -78,6 +78,7 @@ router.patch('/tracks/:id', async (req, res) => {
   for (const field of ['title', 'artist', 'album']) {
     if (typeof req.body?.[field] === 'string') payload[field] = req.body[field].trim().slice(0, 200);
   }
+  if (Number.isFinite(req.body?.bpm)) payload.bpm = Math.round(req.body.bpm);
   const track = await store.update('tracks', req.params.id, payload);
   if (!track) return res.status(404).json({ error: 'Not found' });
   res.json(track);
