@@ -9,6 +9,7 @@ import {
   snippetSanitizer,
   taskSanitizer
 } from './routes/crud.js';
+import musicRouter from './routes/music.js';
 import toolsRouter from './routes/tools.js';
 import translationRouter from './routes/translation.js';
 import * as store from './store.js';
@@ -33,13 +34,15 @@ app.use('/api/notes', crudRouter('notes', noteSanitizer));
 app.use('/api/snippets', crudRouter('snippets', snippetSanitizer));
 app.use('/api/bookmarks', crudRouter('bookmarks', bookmarkSanitizer));
 app.use('/api/environments', crudRouter('environments', environmentSanitizer));
+app.use('/api/music', musicRouter);
 app.use('/api/tools', toolsRouter);
 app.use('/api/translation', translationRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
 app.use((err, req, res, next) => {
-  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File is larger than 15 MB' });
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File is too large' });
+  if (err.message?.includes('is not a supported audio file')) return res.status(400).json({ error: err.message });
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });

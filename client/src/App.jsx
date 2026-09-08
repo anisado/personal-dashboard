@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import Bookmarks from './pages/Bookmarks.jsx';
 import Environments from './pages/Environments.jsx';
+import Music from './pages/Music.jsx';
 import Notes from './pages/Notes.jsx';
 import Overview from './pages/Overview.jsx';
 import Snippets from './pages/Snippets.jsx';
@@ -16,6 +17,7 @@ const NAV = [
   { to: '/snippets', label: 'Snippets', icon: '{}' },
   { to: '/bookmarks', label: 'Bookmarks', icon: '★' },
   { to: '/environments', label: 'Environments', icon: '⛁' },
+  { to: '/music', label: 'Music', icon: '♫' },
   { to: '/translate', label: 'Translate', icon: '⇥' },
   { to: '/translation', label: 'Translation Audit', icon: '⇄' },
   { to: '/tools', label: 'Dev Tools', icon: '⚙' }
@@ -50,6 +52,7 @@ export default function App() {
           <Route path="/snippets" element={<Snippets />} />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/environments" element={<Environments />} />
+          <Route path="/music" element={<Music />} />
           <Route path="/translate" element={<Translate />} />
           <Route path="/translation" element={<Translation />} />
           <Route path="/tools" element={<Tools />} />

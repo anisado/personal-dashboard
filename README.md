@@ -12,6 +12,7 @@ A personal developer assistant dashboard: React (Vite) frontend, Node/Express AP
 | Snippets | Save code/commands per language, copy to clipboard |
 | Bookmarks | Grouped links by category |
 | Environments | Register services and health-check them (status code + latency) |
+| Music | Upload your audio files (mp3/m4a/aac/wav/flac/ogg/opus), edit title and artist, search the library, and play them with seek, volume, shuffle and repeat; files are stored in `DATA_DIR/music` and streamed with byte ranges |
 | Translate | Upload an Arabic legal `.docx` and get an English translation paragraph by paragraph (legal register, optional glossary of fixed term renderings), downloadable as `.docx`. Requires `OPENAI_API_KEY` |
 | Translation Audit | Upload the Arabic original and English translation as `.docx`, get aligned side-by-side segments and flagged issues (missing/added content, untranslated text, number, URL/placeholder, length-ratio, punctuation and terminology-consistency problems) with a score and audit history |
 | Dev Tools | HTTP request runner, JSON formatter, JWT decoder, Base64/URL encoder, hash generator (md5/sha1/sha256/sha512), regex tester, cron next-run preview, timestamp converter, UUID generator |

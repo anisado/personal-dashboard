@@ -265,6 +265,10 @@ button.ghost:hover {
   border-bottom: 1px solid var(--border);
 }
 
+.list li.active {
+  background: var(--panel-2);
+}
+
 .list li:last-child {
   border-bottom: none;
 }
