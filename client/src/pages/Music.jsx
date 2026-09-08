@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 import { detectBpm } from '../lib/bpm.js';
-import { analyseWaveform } from '../lib/waveform.js';
+import { analyseWaveform, mixWaveforms } from '../lib/waveform.js';
 
 const MAX_ZOOM = 32;
 const ROW_SIZES = ['compact', 'normal', 'large'];
@@ -108,7 +108,7 @@ function windowFor(progress, duration, zoom) {
   return { from, to: from + span };
 }
 
-function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZoom }) {
+function Waveform({ peaks, beat, progress, duration, zoom, loading, silent, onSeek, onZoom }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -179,7 +179,10 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
         }}
       />
       {loading && <span className="waveform-note">reading waveform…</span>}
-      {!loading && !peaks && <span className="waveform-note">waveform appears when a track is loaded</span>}
+      {!loading && silent && <span className="waveform-note">every stem is muted</span>}
+      {!loading && !silent && !peaks && (
+        <span className="waveform-note">waveform appears when a track is loaded</span>
+      )}
     </div>
   );
 }
@@ -203,6 +206,8 @@ export default function Music() {
   const [zoom, setZoom] = useState(1);
   const [stems, setStems] = useState({ state: 'idle', progress: 0, stems: [] });
   const [mix, setMix] = useState({});
+  const [stemPeaks, setStemPeaks] = useState(null);
+  const [stemPeaksLoading, setStemPeaksLoading] = useState(false);
   const [playlists, setPlaylists] = useState([]);
   const [playlistId, setPlaylistId] = useState(null);
   const [playlistName, setPlaylistName] = useState('');
@@ -214,6 +219,29 @@ export default function Music() {
   const stemRefs = useRef({});
 
   const separated = stems.state === 'done' && stems.stems.length > 0;
+
+  /** How loud each stem is in the current mix, mirroring what the elements play. */
+  const weights = useMemo(() => {
+    const soloed = stems.stems.filter((name) => mix[name]?.solo);
+    return Object.fromEntries(
+      stems.stems.map((name) => {
+        const settings = mix[name] ?? {};
+        const audible = soloed.length > 0 ? Boolean(settings.solo) : !settings.muted;
+        return [name, audible ? (settings.gain ?? 1) : 0];
+      })
+    );
+  }, [stems.stems, mix]);
+
+  // the waveform follows the mix: only the audible stems, at their fader level
+  const mixedPeaks = useMemo(() => {
+    if (!stemPeaks) return null;
+    const entries = Object.entries(stemPeaks).map(([name, analysis]) => [analysis, weights[name] ?? 0]);
+    return mixWaveforms(entries);
+  }, [stemPeaks, weights]);
+
+  const audibleStems = stems.stems.filter((name) => (weights[name] ?? 0) > 0);
+  const silent = Boolean(stemPeaks) && !mixedPeaks;
+  const shownPeaks = stemPeaks ? mixedPeaks : peaks;
 
   useEffect(() => {
     if (!playing) return undefined;
@@ -415,10 +443,48 @@ export default function Music() {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume, currentId]);
 
+  // each stem gets its own envelope so the waveform can be re-mixed instantly
+  const stemNames = stems.stems.join(',');
+  useEffect(() => {
+    if (!separated || !currentId) return undefined;
+    const names = stemNames.split(',');
+    let cancelled = false;
+    const controller = new AbortController();
+    setStemPeaksLoading(true);
+
+    (async () => {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      const context = new Context();
+      try {
+        const analysed = {};
+        for (const name of names) {
+          const response = await fetch(`${BASE}/music/tracks/${currentId}/stems/${name}/stream`, {
+            signal: controller.signal
+          });
+          const decoded = await context.decodeAudioData(await response.arrayBuffer());
+          if (cancelled) return;
+          analysed[name] = await analyseWaveform(decoded, { normalised: false });
+        }
+        if (!cancelled) setStemPeaks(analysed);
+      } catch {
+        if (!cancelled) setStemPeaks(null);
+      } finally {
+        context.close();
+        if (!cancelled) setStemPeaksLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [separated, currentId, stemNames]);
+
   useEffect(() => {
     if (!currentId) return;
     setStems({ state: 'idle', progress: 0, stems: [] });
     setMix({});
+    setStemPeaks(null);
     stemRefs.current = {};
     api
       .get(`/music/tracks/${currentId}/stems`)
@@ -632,18 +698,24 @@ export default function Music() {
                 <button type="button" className="chip tap" onClick={() => changeZoom(zoom * 2)} disabled={!current || zoom >= MAX_ZOOM}>
                   +
                 </button>
+                {stemPeaks && (
+                  <span className="chip ghost-chip">
+                    wave: {audibleStems.length > 0 ? audibleStems.join(' + ') : 'silent'}
+                  </span>
+                )}
               </div>
             </div>
           </div>
 
           <div className="player-wave">
             <Waveform
-              peaks={peaks}
+              peaks={shownPeaks}
               beat={bpm}
               progress={progress.time}
               duration={progress.duration}
               zoom={zoom}
-              loading={peaksLoading}
+              loading={peaksLoading || stemPeaksLoading}
+              silent={silent}
               onSeek={seek}
               onZoom={changeZoom}
             />

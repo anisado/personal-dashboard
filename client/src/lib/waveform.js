@@ -48,13 +48,45 @@ async function filtered(buffer, band) {
  * waveform can be coloured by what the audio is made of at each moment.
  * Falls back to the plain envelope when offline rendering is unavailable.
  */
-export async function analyseWaveform(buffer) {
-  const peak = normalise(envelope(buffer.getChannelData(0), buffer.sampleRate));
+export async function analyseWaveform(buffer, { normalised = true } = {}) {
+  const scale = normalised ? normalise : (peaks) => peaks;
+  const peak = scale(envelope(buffer.getChannelData(0), buffer.sampleRate));
   if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return { peak };
   try {
     const [low, mid, high] = await Promise.all(BANDS.map((band) => filtered(buffer, band)));
-    return { peak, low: normalise(low), mid: normalise(mid), high: normalise(high) };
+    return { peak, low: scale(low), mid: scale(mid), high: scale(high) };
   } catch {
     return { peak };
   }
+}
+
+/**
+ * Envelope of a stem mix: every stem scaled by its fader and summed, so the
+ * drawn waveform is the audio that is actually audible. Weights of 0 (muted or
+ * not soloed) simply drop out.
+ */
+export function mixWaveforms(entries) {
+  const audible = entries.filter(([, weight]) => weight > 0);
+  if (audible.length === 0) return null;
+  const length = Math.min(...audible.map(([analysis]) => analysis.peak.length));
+  const banded = audible.every(([analysis]) => analysis.low && analysis.mid && analysis.high);
+
+  const sum = (key) => {
+    const values = new Float32Array(length);
+    for (const [analysis, weight] of audible) {
+      const band = analysis[key];
+      for (let index = 0; index < length; index += 1) values[index] += band[index] * weight;
+    }
+    return values;
+  };
+
+  const peak = sum('peak');
+  const loudest = peak.reduce((max, value) => Math.max(max, value), 0) || 1;
+  const scale = (values) => {
+    for (let index = 0; index < values.length; index += 1) values[index] /= loudest;
+    return values;
+  };
+
+  if (!banded) return { peak: scale(peak) };
+  return { peak: scale(peak), low: scale(sum('low')), mid: scale(sum('mid')), high: scale(sum('high')) };
 }
