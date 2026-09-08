@@ -5,6 +5,7 @@ import { detectBpm } from '../lib/bpm.js';
 import { analyseWaveform } from '../lib/waveform.js';
 
 const MAX_ZOOM = 32;
+const ROW_SIZES = ['compact', 'normal', 'large'];
 
 function clock(seconds) {
   if (!Number.isFinite(seconds)) return '0:00';
@@ -202,6 +203,12 @@ export default function Music() {
   const [zoom, setZoom] = useState(1);
   const [stems, setStems] = useState({ state: 'idle', progress: 0, stems: [] });
   const [mix, setMix] = useState({});
+  const [playlists, setPlaylists] = useState([]);
+  const [playlistId, setPlaylistId] = useState(null);
+  const [playlistName, setPlaylistName] = useState('');
+  const [rowSize, setRowSize] = useState(() => localStorage.getItem('music.rowSize') || 'normal');
+  const [library, setLibrary] = useState({ available: false, tracks: {} });
+  const [queueing, setQueueing] = useState(false);
   const audioRef = useRef(null);
   const fileRef = useRef(null);
   const stemRefs = useRef({});
@@ -270,16 +277,102 @@ export default function Music() {
     setMix((current) => ({ ...current, [name]: { gain: 1, ...current[name], ...patch } }));
 
   const load = () => api.get('/music/tracks').then(setTracks).catch((err) => setError(err.message));
+  const loadPlaylists = () => api.get('/music/playlists').then(setPlaylists).catch(() => {});
 
   useEffect(() => {
     load();
+    loadPlaylists();
   }, []);
 
+  useEffect(() => localStorage.setItem('music.rowSize', rowSize), [rowSize]);
+
+  // separation state of every track, so rows show it and "Analyze all" can report progress
+  const loadLibraryStems = useCallback(
+    () => api.get('/music/stems/library').then(setLibrary).catch(() => {}),
+    []
+  );
+
+  useEffect(() => {
+    loadLibraryStems();
+    const timer = setInterval(loadLibraryStems, 5000);
+    return () => clearInterval(timer);
+  }, [loadLibraryStems]);
+
+  const playlist = playlists.find((entry) => entry.id === playlistId) ?? null;
+
   const visible = useMemo(() => {
+    const inPlaylist = playlist
+      ? playlist.trackIds
+          .map((id) => tracks.find((track) => track.id === id))
+          .filter(Boolean)
+      : tracks;
     const needle = search.trim().toLowerCase();
-    if (!needle) return tracks;
-    return tracks.filter((track) => `${track.title} ${track.artist} ${track.album || ''}`.toLowerCase().includes(needle));
-  }, [tracks, search]);
+    if (!needle) return inPlaylist;
+    return inPlaylist.filter((track) =>
+      `${track.title} ${track.artist} ${track.album || ''}`.toLowerCase().includes(needle)
+    );
+  }, [tracks, playlist, search]);
+
+  const pending = visible.filter((track) => library.tracks[track.id]?.state !== 'done');
+
+  const createPlaylist = async () => {
+    const name = playlistName.trim();
+    if (!name) return;
+    try {
+      const created = await api.post('/music/playlists', { name });
+      setPlaylists((current) => [created, ...current]);
+      setPlaylistName('');
+      setPlaylistId(created.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const removePlaylist = async (entry) => {
+    try {
+      await api.remove(`/music/playlists/${entry.id}`);
+      setPlaylists((current) => current.filter((item) => item.id !== entry.id));
+      if (entry.id === playlistId) setPlaylistId(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const addToPlaylist = async (targetId, trackId) => {
+    try {
+      const updated = await api.post(`/music/playlists/${targetId}/tracks`, { trackId });
+      setPlaylists((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const removeFromPlaylist = async (trackId) => {
+    if (!playlist) return;
+    try {
+      const updated = await api.remove(`/music/playlists/${playlist.id}/tracks/${trackId}`);
+      setPlaylists((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  /** Queue every track that has no stems yet; the service separates them one by one. */
+  const analyseAll = async () => {
+    setQueueing(true);
+    setError(null);
+    let failed = 0;
+    for (const track of pending) {
+      try {
+        await api.post(`/music/tracks/${track.id}/stems`, {});
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed > 0) setError(`${failed} of ${pending.length} tracks could not be queued`);
+    await loadLibraryStems();
+    setQueueing(false);
+  };
 
   const current = tracks.find((track) => track.id === currentId) ?? null;
 
@@ -653,45 +746,139 @@ export default function Music() {
         </div>
       </Card>
 
-      <Card title={`Library (${tracks.length})`}>
+      <Card title={`Playlists (${playlists.length})`}>
+        <div className="row">
+          <button type="button" className={playlistId ? 'tab' : 'tab active'} onClick={() => setPlaylistId(null)}>
+            All tracks ({tracks.length})
+          </button>
+          {playlists.map((entry) => (
+            <span key={entry.id} className="stem">
+              <button
+                type="button"
+                className={entry.id === playlistId ? 'tab active' : 'tab'}
+                onClick={() => setPlaylistId(entry.id)}
+              >
+                {entry.name} ({entry.trackIds.length})
+              </button>
+              <button type="button" className="ghost" onClick={() => removePlaylist(entry)}>
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="row">
+          <input
+            placeholder="New playlist name"
+            value={playlistName}
+            onChange={(event) => setPlaylistName(event.target.value)}
+            onKeyDown={(event) => event.key === 'Enter' && createPlaylist()}
+          />
+          <button type="button" onClick={createPlaylist} disabled={!playlistName.trim()}>
+            Create playlist
+          </button>
+        </div>
+      </Card>
+
+      <Card title={playlist ? `${playlist.name} (${visible.length})` : `Library (${tracks.length})`}>
         <div className="row">
           <input placeholder="Search title, artist or album" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <span className="muted">rows</span>
+          {ROW_SIZES.map((size) => (
+            <button
+              key={size}
+              type="button"
+              className={rowSize === size ? 'tab active' : 'tab'}
+              onClick={() => setRowSize(size)}
+            >
+              {size}
+            </button>
+          ))}
+          <button type="button" onClick={analyseAll} disabled={queueing || pending.length === 0}>
+            {queueing ? 'queueing…' : `${playlist ? 'Analyze playlist' : 'Analyze all'} (${pending.length})`}
+          </button>
+          <span className="muted">
+            {library.available
+              ? `${visible.length - pending.length}/${visible.length} separated`
+              : 'stem service offline'}
+          </span>
         </div>
         {visible.length === 0 ? (
-          <EmptyState>{tracks.length === 0 ? 'No tracks yet — drop some audio files above.' : 'Nothing matches that search.'}</EmptyState>
+          <EmptyState>
+            {tracks.length === 0
+              ? 'No tracks yet — drop some audio files above.'
+              : playlist
+                ? 'This playlist is empty — add tracks from the library.'
+                : 'Nothing matches that search.'}
+          </EmptyState>
         ) : (
-          <ul className="list">
-            {visible.map((track) => (
-              <li key={track.id} className={track.id === currentId ? 'active' : undefined}>
-                <button type="button" onClick={() => play(track)}>
-                  {track.id === currentId && playing ? '❚❚' : '▶'}
-                </button>
-                <input
-                  value={track.title}
-                  onChange={(event) =>
-                    setTracks((current) =>
-                      current.map((entry) => (entry.id === track.id ? { ...entry, title: event.target.value } : entry))
+          <ul className={`list tracklist ${rowSize}`}>
+            {visible.map((track) => {
+              const state = library.tracks[track.id] ?? { state: 'idle', progress: 0 };
+              return (
+                <li key={track.id} className={track.id === currentId ? 'active' : undefined}>
+                  <button type="button" onClick={() => play(track)}>
+                    {track.id === currentId && playing ? '❚❚' : '▶'}
+                  </button>
+                  {track.cover ? (
+                    <img className="row-cover" src={`${BASE}/music/tracks/${track.id}/cover`} alt="" />
+                  ) : (
+                    <span className="row-cover cover-empty">♫</span>
+                  )}
+                  <input
+                    value={track.title}
+                    onChange={(event) =>
+                      setTracks((current) =>
+                        current.map((entry) => (entry.id === track.id ? { ...entry, title: event.target.value } : entry))
+                      )
+                    }
+                    onBlur={(event) => rename(track, 'title', event.target.value)}
+                  />
+                  <input
+                    placeholder="artist"
+                    value={track.artist || ''}
+                    onChange={(event) =>
+                      setTracks((current) =>
+                        current.map((entry) => (entry.id === track.id ? { ...entry, artist: event.target.value } : entry))
+                      )
+                    }
+                    onBlur={(event) => rename(track, 'artist', event.target.value)}
+                  />
+                  <span className="muted">{track.bpm ? `${track.bpm} BPM` : ''}</span>
+                  <span className="muted">
+                    {state.state === 'done'
+                      ? 'stems ✓'
+                      : state.state === 'running'
+                        ? `stems ${Math.round((state.progress || 0) * 100)}%`
+                        : state.state === 'failed'
+                          ? 'stems failed'
+                          : ''}
+                  </span>
+                  <span className="muted right">{(track.size / 1024 / 1024).toFixed(1)} MB</span>
+                  {playlist ? (
+                    <button type="button" className="ghost" onClick={() => removeFromPlaylist(track.id)}>
+                      remove
+                    </button>
+                  ) : (
+                    playlists.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(event) => event.target.value && addToPlaylist(event.target.value, track.id)}
+                      >
+                        <option value="">add to…</option>
+                        {playlists.map((entry) => (
+                          <option key={entry.id} value={entry.id}>
+                            {entry.name}
+                          </option>
+                        ))}
+                      </select>
                     )
-                  }
-                  onBlur={(event) => rename(track, 'title', event.target.value)}
-                />
-                <input
-                  placeholder="artist"
-                  value={track.artist || ''}
-                  onChange={(event) =>
-                    setTracks((current) =>
-                      current.map((entry) => (entry.id === track.id ? { ...entry, artist: event.target.value } : entry))
-                    )
-                  }
-                  onBlur={(event) => rename(track, 'artist', event.target.value)}
-                />
-                <span className="muted">{track.bpm ? `${track.bpm} BPM` : ''}</span>
-                <span className="muted right">{(track.size / 1024 / 1024).toFixed(1)} MB</span>
-                <button type="button" className="ghost" onClick={() => removeTrack(track)}>
-                  delete
-                </button>
-              </li>
-            ))}
+                  )}
+                  <button type="button" className="ghost" onClick={() => removeTrack(track)}>
+                    delete
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </Card>

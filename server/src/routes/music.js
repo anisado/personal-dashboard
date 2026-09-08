@@ -121,6 +121,14 @@ router.delete('/tracks/:id', async (req, res, next) => {
     await fsp.rm(path.join(MUSIC_DIR, track.storedName), { force: true });
     await fsp.rm(path.join(STEMS_DIR, track.id), { force: true, recursive: true });
     if (track.cover) await fsp.rm(path.join(MUSIC_DIR, track.cover), { force: true });
+
+    for (const playlist of await store.list('playlists')) {
+      if (playlist.trackIds?.includes(track.id)) {
+        await store.update('playlists', playlist.id, {
+          trackIds: playlist.trackIds.filter((id) => id !== track.id)
+        });
+      }
+    }
     res.status(204).end();
   } catch (err) {
     next(err);
@@ -164,6 +172,26 @@ async function existingStems(trackId) {
 router.get('/stems/status', async (req, res) => {
   const service = await resolveStems({ force: req.query.refresh === '1' });
   res.json({ available: Boolean(service), model: service?.model ?? null });
+});
+
+/** Separation state of the whole library, so the tab can show it per row. */
+router.get('/stems/library', async (req, res, next) => {
+  try {
+    const service = await resolveStems();
+    const states = {};
+    for (const track of await store.list('tracks')) {
+      const stems = await existingStems(track.id);
+      if (stems.length > 0) {
+        states[track.id] = { state: 'done', progress: 1, stems };
+        continue;
+      }
+      const job = track.stemJob && service ? await separationJob(service.baseUrl, track.stemJob) : null;
+      states[track.id] = job ?? { state: 'idle', progress: 0, stems: [] };
+    }
+    res.json({ available: Boolean(service), tracks: states });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get('/tracks/:id/stems', async (req, res, next) => {
@@ -222,6 +250,51 @@ router.get('/tracks/:id/stems/:stem/stream', async (req, res, next) => {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'Stem has not been separated yet' });
     next(err);
   }
+});
+
+router.get('/playlists', async (req, res) => {
+  res.json(await store.list('playlists'));
+});
+
+router.post('/playlists', async (req, res) => {
+  const name = String(req.body?.name ?? '').trim().slice(0, 120);
+  if (!name) return res.status(400).json({ error: 'A playlist needs a name' });
+  res.status(201).json(await store.create('playlists', { name, trackIds: [] }));
+});
+
+router.patch('/playlists/:id', async (req, res) => {
+  const payload = {};
+  if (typeof req.body?.name === 'string') payload.name = req.body.name.trim().slice(0, 120);
+  if (Array.isArray(req.body?.trackIds)) payload.trackIds = req.body.trackIds.filter((id) => typeof id === 'string');
+  const playlist = await store.update('playlists', req.params.id, payload);
+  if (!playlist) return res.status(404).json({ error: 'Not found' });
+  res.json(playlist);
+});
+
+router.delete('/playlists/:id', async (req, res) => {
+  const removed = await store.remove('playlists', req.params.id);
+  if (!removed) return res.status(404).json({ error: 'Not found' });
+  res.status(204).end();
+});
+
+router.post('/playlists/:id/tracks', async (req, res) => {
+  const playlist = await store.get('playlists', req.params.id);
+  if (!playlist) return res.status(404).json({ error: 'Not found' });
+  const track = await store.get('tracks', String(req.body?.trackId ?? ''));
+  if (!track) return res.status(404).json({ error: 'Track not found' });
+  const trackIds = playlist.trackIds ?? [];
+  if (trackIds.includes(track.id)) return res.json(playlist);
+  res.json(await store.update('playlists', playlist.id, { trackIds: [...trackIds, track.id] }));
+});
+
+router.delete('/playlists/:id/tracks/:trackId', async (req, res) => {
+  const playlist = await store.get('playlists', req.params.id);
+  if (!playlist) return res.status(404).json({ error: 'Not found' });
+  res.json(
+    await store.update('playlists', playlist.id, {
+      trackIds: (playlist.trackIds ?? []).filter((id) => id !== req.params.trackId)
+    })
+  );
 });
 
 router.get('/tracks/:id/cover', async (req, res, next) => {

@@ -318,6 +318,33 @@ button.ghost:hover {
   color: var(--muted);
 }
 
+/* --row-cover drives both the artwork and the height of a library row */
+.tracklist {
+  --row-cover: 40px;
+}
+
+.tracklist.compact {
+  --row-cover: 22px;
+}
+
+.tracklist.large {
+  --row-cover: 68px;
+}
+
+.tracklist li {
+  padding: calc(var(--row-cover) / 8) 0;
+}
+
+.row-cover {
+  width: var(--row-cover);
+  height: var(--row-cover);
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--panel-2);
+  flex: none;
+  font-size: calc(var(--row-cover) / 2);
+}
+
 .waveform {
   position: relative;
 }
