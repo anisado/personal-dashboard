@@ -143,19 +143,30 @@ function scoreTempo(correlation, bpm) {
   return combScore(correlation, bpm) * Math.exp(-0.5 * distance * distance);
 }
 
-/** Where the beat grid starts: the phase the onset energy clusters around. */
-function beatPhase(envelope, lag) {
-  let x = 0;
-  let y = 0;
-  for (let frame = 0; frame < envelope.length; frame += 1) {
-    const angle = (2 * Math.PI * frame) / lag;
-    x += envelope[frame] * Math.cos(angle);
-    y += envelope[frame] * Math.sin(angle);
+/** Onset energy collected by a pulse train of period `lag` starting at `phase`. */
+function pulseTrain(envelope, lag, phase) {
+  let sum = 0;
+  for (let position = phase; position < envelope.length; position += lag) {
+    sum += at(envelope, position);
   }
-  const frames = (Math.atan2(y, x) / (2 * Math.PI)) * lag;
-  const seconds = frames / FPS;
-  const period = lag / FPS;
-  return ((seconds % period) + period) % period;
+  return sum;
+}
+
+/**
+ * Land the grid on the beats: search period and phase around the detected
+ * tempo for the pulse train that collects the most onset energy, so the grid
+ * sits on the transients and does not drift across the track.
+ */
+function alignGrid(envelope, lag) {
+  let best = { lag, phase: 0, score: -1 };
+  for (let step = -20; step <= 20; step += 1) {
+    const candidate = lag * (1 + step * 0.001);
+    for (let phase = 0; phase < candidate; phase += 0.25) {
+      const score = pulseTrain(envelope, candidate, phase);
+      if (score > best.score) best = { lag: candidate, phase, score };
+    }
+  }
+  return best;
 }
 
 /**
@@ -193,6 +204,14 @@ export async function detectBpm(buffer) {
   const average = total / candidates;
   if (!best || average <= 0 || bestScore / average < 1.5) return null;
 
-  const bpm = Math.round(best * 10) / 10;
-  return { bpm, offset: beatPhase(envelope, (FPS * 60) / bpm) };
+  const grid = alignGrid(envelope, (FPS * 60) / best);
+  // flux at a frame is the rise from the frame before it, and a frame reacts
+  // to a transient anywhere inside its window, so the hit itself sits a hop
+  // plus half a window later than the frame the energy lands on
+  const offset = ((grid.phase + 1) * HOP + FRAME / 2) / ANALYSIS_RATE;
+  const period = grid.lag / FPS;
+  return {
+    bpm: Math.round(((FPS * 60) / grid.lag) * 100) / 100,
+    offset: ((offset % period) + period) % period
+  };
 }
