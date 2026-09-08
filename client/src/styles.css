@@ -282,6 +282,28 @@ button.ghost:hover {
   color: var(--text);
 }
 
+.player-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 14px;
+  align-items: center;
+}
+
+.cover {
+  width: 120px;
+  height: 120px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--panel-2);
+}
+
+.cover-empty {
+  display: grid;
+  place-items: center;
+  font-size: 34px;
+  color: var(--muted);
+}
+
 .waveform {
   position: relative;
 }

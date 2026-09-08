@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Router } from 'express';
 import multer from 'multer';
+import { parseFile } from 'music-metadata';
 import * as store from '../store.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -44,6 +45,31 @@ function parseName(originalname) {
   return match ? { artist: match[1].trim(), title: match[2].trim() } : { artist: '', title: base };
 }
 
+const COVER_EXTENSION = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
+
+/** Tag values and the embedded cover, written next to the audio file. */
+async function readTags(file) {
+  try {
+    const { common } = await parseFile(path.join(MUSIC_DIR, file.filename), { skipCovers: false });
+    const tags = {};
+    if (common.title) tags.title = common.title.trim().slice(0, 200);
+    if (common.artist) tags.artist = common.artist.trim().slice(0, 200);
+    if (common.album) tags.album = common.album.trim().slice(0, 200);
+
+    const picture = common.picture?.[0];
+    const extension = picture && COVER_EXTENSION[picture.format];
+    if (picture && extension) {
+      const cover = `${path.parse(file.filename).name}${extension}`;
+      await fsp.writeFile(path.join(MUSIC_DIR, cover), Buffer.from(picture.data));
+      tags.cover = cover;
+      tags.coverMime = picture.format;
+    }
+    return tags;
+  } catch {
+    return {};
+  }
+}
+
 const router = Router();
 
 router.get('/tracks', async (req, res) => {
@@ -60,6 +86,7 @@ router.post('/tracks', upload.array('files'), async (req, res, next) => {
       tracks.push(
         await store.create('tracks', {
           ...parseName(file.originalname),
+          ...(await readTags(file)),
           file: file.originalname,
           storedName: file.filename,
           size: file.size,
@@ -90,7 +117,20 @@ router.delete('/tracks/:id', async (req, res, next) => {
     if (!track) return res.status(404).json({ error: 'Not found' });
     await store.remove('tracks', track.id);
     await fsp.rm(path.join(MUSIC_DIR, track.storedName), { force: true });
+    if (track.cover) await fsp.rm(path.join(MUSIC_DIR, track.cover), { force: true });
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/tracks/:id/cover', async (req, res, next) => {
+  try {
+    const track = await store.get('tracks', req.params.id);
+    if (!track?.cover) return res.status(404).json({ error: 'No cover art' });
+    res.setHeader('Content-Type', track.coverMime || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    fs.createReadStream(path.join(MUSIC_DIR, track.cover)).pipe(res);
   } catch (err) {
     next(err);
   }

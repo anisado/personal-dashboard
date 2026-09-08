@@ -3,7 +3,8 @@ import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 import { detectBpm } from '../lib/bpm.js';
 
-const PEAK_COUNT = 900;
+const PEAK_COUNT = 4000;
+const MAX_ZOOM = 32;
 
 function clock(seconds) {
   if (!Number.isFinite(seconds)) return '0:00';
@@ -30,23 +31,31 @@ function peaksFrom(buffer) {
 }
 
 /** Beat ticks every 60/bpm seconds, with a taller line on each bar (4 beats). */
-function drawBeatGrid(context, beat, width, height, duration) {
-  if (!beat || !duration) return;
+function drawBeatGrid(context, beat, width, height, from, to) {
+  if (!beat || to <= from) return;
   const period = 60 / beat.bpm;
-  let index = 0;
-  for (let time = beat.offset % period; time < duration; time += period) {
-    const x = (time / duration) * width;
+  const phase = beat.offset % period;
+  for (let index = Math.max(Math.ceil((from - phase) / period), 0); ; index += 1) {
+    const time = phase + index * period;
+    if (time > to) break;
+    const x = ((time - from) / (to - from)) * width;
     const downbeat = index % 4 === 0;
     context.strokeStyle = downbeat ? 'rgba(226, 232, 240, 0.55)' : 'rgba(148, 163, 184, 0.22)';
     context.beginPath();
     context.moveTo(x, downbeat ? 0 : height * 0.12);
     context.lineTo(x, downbeat ? height : height * 0.88);
     context.stroke();
-    index += 1;
   }
 }
 
-function Waveform({ peaks, beat, progress, duration, loading, onSeek }) {
+/** Visible slice of the track: all of it at zoom 1, otherwise centred on the playhead. */
+function windowFor(progress, duration, zoom) {
+  const span = duration / zoom;
+  const from = Math.min(Math.max(progress - span / 2, 0), Math.max(duration - span, 0));
+  return { from, to: from + span };
+}
+
+function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZoom }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -62,11 +71,10 @@ function Waveform({ peaks, beat, progress, duration, loading, onSeek }) {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
 
-    const played = duration ? Math.min(progress / duration, 1) : 0;
-    const bars = peaks?.length ?? 0;
+    const total = peaks?.length ?? 0;
     const middle = height / 2;
 
-    if (bars === 0) {
+    if (total === 0 || !duration) {
       context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
       context.beginPath();
       context.moveTo(0, middle);
@@ -75,15 +83,21 @@ function Waveform({ peaks, beat, progress, duration, loading, onSeek }) {
       return;
     }
 
-    drawBeatGrid(context, beat, width, height, duration);
+    const { from, to } = windowFor(progress, duration, zoom);
+    drawBeatGrid(context, beat, width, height, from, to);
 
+    const first = Math.floor((from / duration) * total);
+    const last = Math.max(Math.ceil((to / duration) * total), first + 1);
+    const bars = last - first;
     const barWidth = width / bars;
+    const playedBar = ((progress - from) / (to - from)) * bars;
+
     for (let index = 0; index < bars; index += 1) {
-      const amplitude = Math.max(peaks[index] * (height / 2 - 2), 1);
-      context.fillStyle = index / bars <= played ? '#22d3ee' : 'rgba(148, 163, 184, 0.45)';
+      const amplitude = Math.max((peaks[first + index] ?? 0) * (height / 2 - 2), 1);
+      context.fillStyle = index <= playedBar ? '#22d3ee' : 'rgba(148, 163, 184, 0.45)';
       context.fillRect(index * barWidth, middle - amplitude, Math.max(barWidth - 0.5, 0.5), amplitude * 2);
     }
-  }, [peaks, beat, progress, duration]);
+  }, [peaks, beat, progress, duration, zoom]);
 
   return (
     <div className="waveform">
@@ -92,7 +106,12 @@ function Waveform({ peaks, beat, progress, duration, loading, onSeek }) {
         onClick={(event) => {
           if (!duration) return;
           const rect = event.currentTarget.getBoundingClientRect();
-          onSeek(((event.clientX - rect.left) / rect.width) * duration);
+          const { from, to } = windowFor(progress, duration, zoom);
+          onSeek(from + ((event.clientX - rect.left) / rect.width) * (to - from));
+        }}
+        onWheel={(event) => {
+          if (!duration) return;
+          onZoom(event.deltaY < 0 ? zoom * 2 : zoom / 2);
         }}
       />
       {loading && <span className="waveform-note">reading waveform…</span>}
@@ -117,6 +136,7 @@ export default function Music() {
   const [peaksLoading, setPeaksLoading] = useState(false);
   const [bpm, setBpm] = useState(null);
   const [analysing, setAnalysing] = useState(false);
+  const [zoom, setZoom] = useState(1);
   const audioRef = useRef(null);
   const fileRef = useRef(null);
 
@@ -176,6 +196,7 @@ export default function Music() {
   useEffect(() => {
     setPeaks(null);
     setBpm(null);
+    setZoom(1);
     if (!currentId) return undefined;
 
     let cancelled = false;
@@ -267,6 +288,8 @@ export default function Music() {
   const tempo = bpm?.bpm ?? current?.bpm ?? null;
   const tempoLabel = tempo ? `${tempo} BPM` : current ? (analysing ? 'detecting BPM…' : 'no steady beat') : 'BPM —';
 
+  const changeZoom = (next) => setZoom(Math.min(Math.max(next, 1), MAX_ZOOM));
+
   const seek = (seconds) => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = seconds;
@@ -330,14 +353,33 @@ export default function Music() {
             }}
           />
 
-          <Waveform
-            peaks={peaks}
-            beat={bpm}
-            progress={progress.time}
-            duration={progress.duration}
-            loading={peaksLoading}
-            onSeek={seek}
-          />
+          <div className="player-row">
+            {current?.cover ? (
+              <img className="cover" src={`${BASE}/music/tracks/${current.id}/cover`} alt="" />
+            ) : (
+              <div className="cover cover-empty">♫</div>
+            )}
+            <Waveform
+              peaks={peaks}
+              beat={bpm}
+              progress={progress.time}
+              duration={progress.duration}
+              zoom={zoom}
+              loading={peaksLoading}
+              onSeek={seek}
+              onZoom={changeZoom}
+            />
+          </div>
+
+          <div className="row">
+            <button type="button" onClick={() => changeZoom(zoom / 2)} disabled={!current || zoom <= 1}>
+              − zoom
+            </button>
+            <button type="button" onClick={() => changeZoom(zoom * 2)} disabled={!current || zoom >= MAX_ZOOM}>
+              + zoom
+            </button>
+            <span className="muted">{zoom > 1 ? `${zoom}× around the playhead` : 'whole track'}</span>
+          </div>
 
           <div className="row">
             <button type="button" onClick={() => step(-1)} disabled={!current}>
