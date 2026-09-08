@@ -251,6 +251,20 @@ button.ghost:hover {
   border-color: var(--accent);
 }
 
+.stem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.stem input[type='range'] {
+  width: 70px;
+}
+
 .list {
   list-style: none;
   margin: 0;

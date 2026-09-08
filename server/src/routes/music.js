@@ -5,9 +5,11 @@ import { Router } from 'express';
 import multer from 'multer';
 import { parseFile } from 'music-metadata';
 import * as store from '../store.js';
+import { resolveStems, separationJob, startSeparation } from '../lib/stems.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const MUSIC_DIR = path.join(DATA_DIR, 'music');
+const STEMS_DIR = path.join(MUSIC_DIR, 'stems');
 
 const MIME_BY_EXTENSION = {
   '.mp3': 'audio/mpeg',
@@ -117,9 +119,107 @@ router.delete('/tracks/:id', async (req, res, next) => {
     if (!track) return res.status(404).json({ error: 'Not found' });
     await store.remove('tracks', track.id);
     await fsp.rm(path.join(MUSIC_DIR, track.storedName), { force: true });
+    await fsp.rm(path.join(STEMS_DIR, track.id), { force: true, recursive: true });
     if (track.cover) await fsp.rm(path.join(MUSIC_DIR, track.cover), { force: true });
     res.status(204).end();
   } catch (err) {
+    next(err);
+  }
+});
+
+/** Range-aware file streaming, which is what <audio> seeking needs. */
+function streamFile(req, res, file, mime, size) {
+  res.setHeader('Content-Type', mime || 'application/octet-stream');
+  res.setHeader('Accept-Ranges', 'bytes');
+
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (range) {
+    const start = range[1] ? Number(range[1]) : 0;
+    const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start >= size || start > end) {
+      res.setHeader('Content-Range', `bytes */${size}`);
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+    res.setHeader('Content-Length', end - start + 1);
+    return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+
+  res.setHeader('Content-Length', size);
+  return fs.createReadStream(file).pipe(res);
+}
+
+/** Stems already on disk for a track, in mixer order. */
+async function existingStems(trackId) {
+  try {
+    const files = await fsp.readdir(path.join(STEMS_DIR, trackId));
+    const names = files.filter((file) => file.endsWith('.mp3')).map((file) => path.parse(file).name);
+    return ['vocals', 'drums', 'bass', 'other'].filter((stem) => names.includes(stem));
+  } catch {
+    return [];
+  }
+}
+
+router.get('/stems/status', async (req, res) => {
+  const service = await resolveStems({ force: req.query.refresh === '1' });
+  res.json({ available: Boolean(service), model: service?.model ?? null });
+});
+
+router.get('/tracks/:id/stems', async (req, res, next) => {
+  try {
+    const track = await store.get('tracks', req.params.id);
+    if (!track) return res.status(404).json({ error: 'Not found' });
+
+    const stems = await existingStems(track.id);
+    if (stems.length > 0) return res.json({ state: 'done', progress: 1, stems });
+
+    const service = await resolveStems();
+    if (track.stemJob && service) {
+      const job = await separationJob(service.baseUrl, track.stemJob);
+      if (job?.state === 'done') {
+        return res.json({ state: 'done', progress: 1, stems: await existingStems(track.id) });
+      }
+      if (job) return res.json(job);
+    }
+    res.json({ state: 'idle', progress: 0, stems: [], available: Boolean(service) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/tracks/:id/stems', async (req, res, next) => {
+  try {
+    const track = await store.get('tracks', req.params.id);
+    if (!track) return res.status(404).json({ error: 'Not found' });
+
+    const service = await resolveStems({ force: true });
+    if (!service) {
+      return res.status(503).json({
+        error: 'Stem separation is unavailable — start it with: docker compose --profile stems up -d --build'
+      });
+    }
+
+    const job = await startSeparation(
+      service.baseUrl,
+      path.posix.join('music', track.storedName),
+      path.posix.join('music', 'stems', track.id)
+    );
+    await store.update('tracks', track.id, { stemJob: job.id });
+    res.status(202).json(job);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/tracks/:id/stems/:stem/stream', async (req, res, next) => {
+  try {
+    const stem = path.basename(req.params.stem, '.mp3');
+    const file = path.join(STEMS_DIR, req.params.id, `${stem}.mp3`);
+    const { size } = await fsp.stat(file);
+    streamFile(req, res, file, 'audio/mpeg', size);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).json({ error: 'Stem has not been separated yet' });
     next(err);
   }
 });
@@ -142,27 +242,7 @@ router.get('/tracks/:id/stream', async (req, res, next) => {
     if (!track) return res.status(404).json({ error: 'Not found' });
     const file = path.join(MUSIC_DIR, track.storedName);
     const { size } = await fsp.stat(file);
-
-    res.setHeader('Content-Type', track.mime || 'application/octet-stream');
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    // seeking in <audio> depends on byte ranges
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
-    if (range) {
-      const start = range[1] ? Number(range[1]) : 0;
-      const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-      if (start >= size || start > end) {
-        res.setHeader('Content-Range', `bytes */${size}`);
-        return res.status(416).end();
-      }
-      res.status(206);
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-      res.setHeader('Content-Length', end - start + 1);
-      return fs.createReadStream(file, { start, end }).pipe(res);
-    }
-
-    res.setHeader('Content-Length', size);
-    fs.createReadStream(file).pipe(res);
+    streamFile(req, res, file, track.mime, size);
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'Audio file is missing on disk' });
     next(err);

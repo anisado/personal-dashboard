@@ -9,6 +9,7 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       TRANSLATION_TIMEOUT_MS: ${TRANSLATION_TIMEOUT_MS:-}
       REVIEW_TIMEOUT_MS: ${REVIEW_TIMEOUT_MS:-}
+      STEMS_URL: ${STEMS_URL:-}
     extra_hosts:
       # lets the container reach a model server running on the host
       - 'host.docker.internal:host-gateway'
@@ -18,6 +19,22 @@ services:
       - '4000'
     ports:
       - '${API_PORT:-4000}:4000'
+    restart: unless-stopped
+
+  # optional: docker compose --profile stems up -d --build
+  stems:
+    build: ./stems
+    profiles: ['stems']
+    environment:
+      DATA_DIR: /data
+      DEMUCS_MODEL: ${DEMUCS_MODEL:-htdemucs}
+    volumes:
+      - dashboard-data:/data
+      - demucs-models:/models
+    expose:
+      - '8001'
+    ports:
+      - '${STEMS_PORT:-8001}:8001'
     restart: unless-stopped
 
   web:
@@ -30,3 +47,4 @@ services:
 
 volumes:
   dashboard-data:
+  demucs-models:

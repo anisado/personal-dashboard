@@ -200,18 +200,74 @@ export default function Music() {
   const [bpm, setBpm] = useState(null);
   const [analysing, setAnalysing] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [stems, setStems] = useState({ state: 'idle', progress: 0, stems: [] });
+  const [mix, setMix] = useState({});
   const audioRef = useRef(null);
   const fileRef = useRef(null);
+  const stemRefs = useRef({});
+
+  const separated = stems.state === 'done' && stems.stems.length > 0;
 
   useEffect(() => {
     if (!playing) return undefined;
     let frame = requestAnimationFrame(function tick() {
       const audio = audioRef.current;
-      if (audio) setProgress({ time: audio.currentTime, duration: audio.duration || 0 });
+      if (audio) {
+        setProgress({ time: audio.currentTime, duration: audio.duration || 0 });
+        // the mix is played by one element per stem, kept on the main clock
+        for (const stem of Object.values(stemRefs.current)) {
+          if (!stem) continue;
+          if (Math.abs(stem.currentTime - audio.currentTime) > 0.08) {
+            stem.currentTime = audio.currentTime;
+          }
+          // seeking can interrupt a pending play(), leaving one stem behind
+          if (stem.paused && !audio.paused) stem.play().catch(() => {});
+        }
+      }
       frame = requestAnimationFrame(tick);
     });
     return () => cancelAnimationFrame(frame);
   }, [playing]);
+
+  // stem elements follow the transport and the per-stem faders
+  useEffect(() => {
+    const soloed = stems.stems.filter((stem) => mix[stem]?.solo);
+    for (const name of stems.stems) {
+      const element = stemRefs.current[name];
+      if (!element) continue;
+      const settings = mix[name] ?? {};
+      const audible = soloed.length > 0 ? settings.solo : !settings.muted;
+      element.volume = audible ? volume * (settings.gain ?? 1) : 0;
+      if (playing) element.play().catch(() => {});
+      else element.pause();
+    }
+    if (audioRef.current) audioRef.current.muted = separated;
+  }, [mix, stems, playing, volume, separated, currentId]);
+
+  // poll while the separation job runs
+  useEffect(() => {
+    if (!currentId || stems.state !== 'running') return undefined;
+    const timer = setInterval(() => {
+      api
+        .get(`/music/tracks/${currentId}/stems`)
+        .then(setStems)
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [currentId, stems.state]);
+
+  const separate = async () => {
+    if (!currentId) return;
+    try {
+      await api.post(`/music/tracks/${currentId}/stems`, {});
+      setStems({ state: 'running', progress: 0, stems: [] });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const setStemSetting = (name, patch) =>
+    setMix((current) => ({ ...current, [name]: { gain: 1, ...current[name], ...patch } }));
 
   const load = () => api.get('/music/tracks').then(setTracks).catch((err) => setError(err.message));
 
@@ -265,6 +321,17 @@ export default function Music() {
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume, currentId]);
+
+  useEffect(() => {
+    if (!currentId) return;
+    setStems({ state: 'idle', progress: 0, stems: [] });
+    setMix({});
+    stemRefs.current = {};
+    api
+      .get(`/music/tracks/${currentId}/stems`)
+      .then(setStems)
+      .catch(() => {});
+  }, [currentId]);
 
   useEffect(() => {
     setPeaks(null);
@@ -478,6 +545,61 @@ export default function Music() {
             <span className="muted">
               {zoom > 1 ? `${zoom.toFixed(1).replace(/\.0$/, '')}× around the playhead` : 'whole track'}
             </span>
+          </div>
+
+          <div className="row">
+            {separated ? (
+              stems.stems.map((name) => {
+                const settings = mix[name] ?? {};
+                return (
+                  <span key={name} className="stem">
+                    <button
+                      type="button"
+                      className={settings.muted ? 'tab' : 'tab active'}
+                      onClick={() => setStemSetting(name, { muted: !settings.muted })}
+                    >
+                      {name}
+                    </button>
+                    <button
+                      type="button"
+                      className={settings.solo ? 'tab active' : 'tab'}
+                      onClick={() => setStemSetting(name, { solo: !settings.solo })}
+                    >
+                      solo
+                    </button>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={settings.gain ?? 1}
+                      onChange={(event) => setStemSetting(name, { gain: Number(event.target.value) })}
+                    />
+                    <audio
+                      ref={(element) => {
+                        if (element) stemRefs.current[name] = element;
+                        else delete stemRefs.current[name];
+                      }}
+                      preload="auto"
+                      src={`${BASE}/music/tracks/${currentId}/stems/${name}/stream`}
+                    />
+                  </span>
+                );
+              })
+            ) : (
+              <>
+                <button type="button" onClick={separate} disabled={!current || stems.state === 'running'}>
+                  {stems.state === 'running' ? 'separating stems…' : 'Separate stems'}
+                </button>
+                <span className="muted">
+                  {stems.state === 'running'
+                    ? `${Math.round((stems.progress || 0) * 100)}% — vocals, drums, bass and the rest`
+                    : stems.state === 'failed'
+                      ? `separation failed: ${stems.error}`
+                      : 'split the track into vocals, drums, bass and other'}
+                </span>
+              </>
+            )}
           </div>
 
           <div className="row">

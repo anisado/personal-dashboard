@@ -12,7 +12,7 @@ A personal developer assistant dashboard: React (Vite) frontend, Node/Express AP
 | Snippets | Save code/commands per language, copy to clipboard |
 | Bookmarks | Grouped links by category |
 | Environments | Register services and health-check them (status code + latency) |
-| Music | Upload your audio files (mp3/m4a/aac/wav/flac/ogg/opus), edit title and artist, search the library, and play them with seek, volume, shuffle and repeat; embedded tags and cover art are read on upload (the cover sits left of the waveform); the waveform is drawn in the browser and coloured by frequency content (bass red, mids green, treble blue; click to seek, scroll or the zoom buttons to zoom in up to 32× around the playhead); the tempo is detected from a spectral-flux onset envelope with comb-filter autocorrelation and shown in BPM with a beat/bar grid, with ÷2 and ×2 buttons to correct the octave; files are stored in `DATA_DIR/music` and streamed with byte ranges |
+| Music | Upload your audio files (mp3/m4a/aac/wav/flac/ogg/opus), edit title and artist, search the library, and play them with seek, volume, shuffle and repeat; embedded tags and cover art are read on upload (the cover sits left of the waveform); the waveform is drawn in the browser and coloured by frequency content (bass red, mids green, treble blue; click to seek, scroll or the zoom buttons to zoom in up to 32× around the playhead); the tempo is detected from a spectral-flux onset envelope with comb-filter autocorrelation and shown in BPM with a beat/bar grid, with ÷2 and ×2 buttons to correct the octave; "Separate stems" splits the track into vocals, drums, bass and other with a local Demucs service, each with its own mute, solo and volume fader, so you can drop the vocal or keep only the beat; files are stored in `DATA_DIR/music` and streamed with byte ranges |
 | Translate | Upload an Arabic legal `.docx` and get an English translation paragraph by paragraph (legal register, optional glossary of fixed term renderings), downloadable as `.docx`. Requires `OPENAI_API_KEY` |
 | Translation Audit | Upload the Arabic original and English translation as `.docx`, get aligned side-by-side segments and flagged issues (missing/added content, untranslated text, number, URL/placeholder, length-ratio, punctuation and terminology-consistency problems) with a score and audit history |
 | Dev Tools | HTTP request runner, JSON formatter, JWT decoder, Base64/URL encoder, hash generator (md5/sha1/sha256/sha512), regex tester, cron next-run preview, timestamp converter, UUID generator |
@@ -69,6 +69,16 @@ To go back to the hosted provider (or any other OpenAI-compatible server), run `
 
 With neither `OPENAI_API_KEY` nor `OPENAI_BASE_URL` the audit runs deterministic checks only: they catch mechanical errors (omissions, numbers, links, leftover Arabic, inconsistent terms) but cannot judge meaning.
 
+### Stem separation
+
+Splitting a song into vocals/drums/bass/other needs the optional Demucs service:
+
+```bash
+docker compose --profile stems up -d --build
+```
+
+The API detects it automatically (override with `STEMS_URL`), so the "Separate stems" button in the Music tab then works. The first build downloads PyTorch (~200 MB) and the first separation downloads the `htdemucs` model (~80 MB, cached in the `demucs-models` volume). Separation is CPU-bound — roughly real time per track on a typical laptop, one track at a time — and the resulting mp3 stems are cached in `DATA_DIR/music/stems/<track id>`, so a song is only separated once. Use another model with `DEMUCS_MODEL` (e.g. `htdemucs_ft`, slower and better).
+
 ## API
 
 `GET /api/health`, `GET /api/stats`
@@ -78,5 +88,7 @@ CRUD (`GET` / `POST` / `PATCH /:id` / `DELETE /:id`) for `/api/tasks`, `/api/not
 Translation: `POST /api/translation/translate` (multipart with `source` = Arabic `.docx`, optional `glossary` JSON object), `GET /api/translation/translations`, `GET /api/translation/translations/:id`, `GET /api/translation/translations/:id/docx`, `DELETE /api/translation/translations/:id`.
 
 Translation audit: `POST /api/translation/audit` (multipart with `source` = Arabic `.docx` and `target` = English `.docx`, optional `?llm=true`), `GET /api/translation/config`, `GET /api/translation/audits`, `DELETE /api/translation/audits/:id`. Max 15 MB per file.
+
+Music: `GET|POST /api/music/tracks`, `PATCH|DELETE /api/music/tracks/:id`, `GET /api/music/tracks/:id/stream`, `GET /api/music/tracks/:id/cover`, `GET /api/music/stems/status`, `POST /api/music/tracks/:id/stems` (start separation), `GET /api/music/tracks/:id/stems` (job state), `GET /api/music/tracks/:id/stems/:stem/stream`.
 
 Tools: `GET /api/tools/uuid?count=n`, `POST /api/tools/hash`, `POST /api/tools/jwt/decode`, `POST /api/tools/cron`, `POST /api/tools/http`.
