@@ -2,37 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE, api } from '../api.js';
 import { Card, EmptyState, ErrorBanner, Page } from '../components/Page.jsx';
 import { detectBpm } from '../lib/bpm.js';
+import { analyseWaveform } from '../lib/waveform.js';
 
-const ENVELOPE_HZ = 1000;
 const MAX_ZOOM = 32;
 
 function clock(seconds) {
   if (!Number.isFinite(seconds)) return '0:00';
   const total = Math.floor(seconds);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-}
-
-/**
- * One normalised peak per millisecond of audio, so zooming in keeps more
- * detail than the canvas can show instead of running out of samples.
- */
-function peaksFrom(buffer) {
-  const channel = buffer.getChannelData(0);
-  const perBucket = Math.max(Math.round(buffer.sampleRate / ENVELOPE_HZ), 1);
-  const peaks = new Float32Array(Math.ceil(channel.length / perBucket));
-  for (let bucket = 0; bucket < peaks.length; bucket += 1) {
-    let max = 0;
-    const start = bucket * perBucket;
-    const end = Math.min(start + perBucket, channel.length);
-    for (let offset = start; offset < end; offset += 1) {
-      const value = Math.abs(channel[offset]);
-      if (value > max) max = value;
-    }
-    peaks[bucket] = max;
-  }
-  const loudest = peaks.reduce((max, value) => Math.max(max, value), 0) || 1;
-  for (let index = 0; index < peaks.length; index += 1) peaks[index] /= loudest;
-  return peaks;
 }
 
 /**
@@ -65,33 +42,31 @@ function columnAmplitudes(peaks, duration, from, to, columns) {
   return amplitudes;
 }
 
-/** Mirror the amplitudes around the centre line as one filled, curved shape. */
-function fillWaveform(context, amplitudes, width, height, style, clip) {
+/** Bass, mids and treble of a column mixed into one colour. */
+function columnColour(low, mid, high, played) {
+  const loudest = Math.max(low, mid, high, 0.0001);
+  const red = Math.round(80 + 175 * (low / loudest));
+  const green = Math.round(80 + 175 * (mid / loudest));
+  const blue = Math.round(80 + 175 * (high / loudest));
+  return `rgba(${red}, ${green}, ${blue}, ${played ? 1 : 0.4})`;
+}
+
+/** Mirror the amplitudes around the centre line, one coloured column at a time. */
+function drawWaveform(context, columns, width, height, playhead) {
   const middle = height / 2;
-  const columns = amplitudes.length;
-  const columnWidth = width / (columns - 1 || 1);
-  const y = (column, sign) => middle - sign * Math.max(amplitudes[column] * (middle - 2), 0.75);
+  const count = columns.amplitude.length;
+  const columnWidth = width / count;
 
-  context.save();
-  if (clip) {
-    context.beginPath();
-    context.rect(clip.from, 0, Math.max(clip.to - clip.from, 0), height);
-    context.clip();
-  }
-
-  context.beginPath();
-  context.moveTo(0, y(0, 1));
-  for (let column = 1; column < columns; column += 1) {
+  for (let column = 0; column < count; column += 1) {
+    const amplitude = Math.max(columns.amplitude[column] * (middle - 2), 0.75);
     const x = column * columnWidth;
-    context.quadraticCurveTo(x - columnWidth / 2, y(column - 1, 1), x, y(column, 1));
+    context.fillStyle = columns.low
+      ? columnColour(columns.low[column], columns.mid[column], columns.high[column], x <= playhead)
+      : x <= playhead
+        ? '#22d3ee'
+        : 'rgba(148, 163, 184, 0.45)';
+    context.fillRect(x, middle - amplitude, columnWidth + 0.5, amplitude * 2);
   }
-  for (let column = columns - 1; column >= 0; column -= 1) {
-    context.lineTo(column * columnWidth, y(column, -1));
-  }
-  context.closePath();
-  context.fillStyle = style;
-  context.fill();
-  context.restore();
 }
 
 /** Beat ticks every 60/bpm seconds, with a taller line on each bar (4 beats). */
@@ -137,7 +112,7 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
 
     const middle = height / 2;
 
-    if (!peaks?.length || !duration) {
+    if (!peaks?.peak?.length || !duration) {
       context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
       context.beginPath();
       context.moveTo(0, middle);
@@ -149,10 +124,21 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, onSeek, onZo
     const { from, to } = windowFor(progress, duration, zoom);
     drawBeatGrid(context, beat, width, height, from, to);
 
-    const amplitudes = columnAmplitudes(peaks, duration, from, to, Math.round(width * ratio));
+    const count = Math.round(width * ratio);
+    const band = (values) => (values ? columnAmplitudes(values, duration, from, to, count) : null);
     const playhead = ((progress - from) / (to - from)) * width;
-    fillWaveform(context, amplitudes, width, height, 'rgba(148, 163, 184, 0.45)');
-    fillWaveform(context, amplitudes, width, height, '#22d3ee', { from: 0, to: playhead });
+    drawWaveform(
+      context,
+      {
+        amplitude: columnAmplitudes(peaks.peak, duration, from, to, count),
+        low: band(peaks.low),
+        mid: band(peaks.mid),
+        high: band(peaks.high)
+      },
+      width,
+      height,
+      playhead
+    );
 
     if (playhead >= 0 && playhead <= width) {
       context.strokeStyle = 'rgba(34, 211, 238, 0.9)';
@@ -286,7 +272,9 @@ export default function Music() {
         context = new (window.AudioContext || window.webkitAudioContext)();
         const decoded = await context.decodeAudioData(bytes);
         if (cancelled) return;
-        setPeaks(peaksFrom(decoded));
+        const analysed = await analyseWaveform(decoded);
+        if (cancelled) return;
+        setPeaks(analysed);
         setPeaksLoading(false);
 
         const tempo = await detectBpm(decoded);
@@ -364,6 +352,19 @@ export default function Music() {
 
   const changeZoom = (next) => setZoom(Math.min(Math.max(next, 1), MAX_ZOOM));
 
+  /** Half and double a tempo fit the same beats, so let the reading be corrected. */
+  const scaleTempo = async (factor) => {
+    if (!tempo || !currentId) return;
+    const scaled = Math.round(tempo * factor * 10) / 10;
+    setBpm((beat) => (beat ? { ...beat, bpm: scaled } : { bpm: scaled, offset: 0 }));
+    try {
+      const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: scaled });
+      setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const seek = (seconds) => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = seconds;
@@ -407,6 +408,12 @@ export default function Music() {
         <div className="form-stack">
           <div className="row">
             <span className="tag">{tempoLabel}</span>
+            <button type="button" className="ghost" onClick={() => scaleTempo(0.5)} disabled={!tempo}>
+              ÷2
+            </button>
+            <button type="button" className="ghost" onClick={() => scaleTempo(2)} disabled={!tempo}>
+              ×2
+            </button>
           </div>
           <audio
             ref={audioRef}

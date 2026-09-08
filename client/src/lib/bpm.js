@@ -1,67 +1,161 @@
-const MIN_BPM = 70;
-const MAX_BPM = 180;
+const MIN_BPM = 60;
+const MAX_BPM = 200;
+const ANALYSIS_RATE = 22050;
+const FRAME = 1024;
+const HOP = 256;
+const FPS = ANALYSIS_RATE / HOP;
+/** Tempi far from here are usually the double or half of the real one. */
+const PREFERRED_BPM = 125;
+const PREFERENCE_WIDTH = 1.1;
 
-/** Isolate the percussive low end so beats stand out as amplitude peaks. */
-async function lowEnd(buffer) {
+/** Mono mixdown at a fixed rate, so the analysis is independent of the file. */
+async function monoSamples(buffer) {
   const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const offline = new Offline(1, buffer.length, buffer.sampleRate);
+  const offline = new Offline(1, Math.ceil(buffer.duration * ANALYSIS_RATE), ANALYSIS_RATE);
   const source = offline.createBufferSource();
   source.buffer = buffer;
-
-  const lowpass = offline.createBiquadFilter();
-  lowpass.type = 'lowpass';
-  lowpass.frequency.value = 150;
-  lowpass.Q.value = 1;
-
-  const highpass = offline.createBiquadFilter();
-  highpass.type = 'highpass';
-  highpass.frequency.value = 40;
-  highpass.Q.value = 1;
-
-  source.connect(lowpass).connect(highpass).connect(offline.destination);
+  source.connect(offline.destination);
   source.start(0);
   return (await offline.startRendering()).getChannelData(0);
 }
 
-/** Peaks above a threshold, with a 250 ms refractory window so one hit counts once. */
-function peaksAbove(samples, threshold, sampleRate) {
-  const gap = Math.floor(sampleRate * 0.25);
-  const peaks = [];
-  for (let index = 0; index < samples.length; index += 1) {
-    if (Math.abs(samples[index]) < threshold) continue;
-    peaks.push(index);
-    index += gap;
-  }
-  return peaks;
-}
-
-function tempoCounts(peaks, sampleRate) {
-  const counts = new Map();
-  for (let index = 0; index < peaks.length; index += 1) {
-    for (let ahead = 1; ahead <= 10 && index + ahead < peaks.length; ahead += 1) {
-      const seconds = (peaks[index + ahead] - peaks[index]) / sampleRate;
-      if (seconds <= 0) continue;
-      let tempo = 60 / seconds;
-      while (tempo < MIN_BPM) tempo *= 2;
-      while (tempo > MAX_BPM) tempo /= 2;
-      const rounded = Math.round(tempo);
-      counts.set(rounded, (counts.get(rounded) || 0) + 1);
+/** In-place iterative radix-2 FFT. */
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i += 1) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
     }
   }
-  return counts;
+  for (let len = 2; len <= n; len <<= 1) {
+    const angle = (-2 * Math.PI) / len;
+    const wRe = Math.cos(angle);
+    const wIm = Math.sin(angle);
+    for (let start = 0; start < n; start += len) {
+      let curRe = 1;
+      let curIm = 0;
+      for (let offset = 0; offset < len / 2; offset += 1) {
+        const a = start + offset;
+        const b = a + len / 2;
+        const tRe = re[b] * curRe - im[b] * curIm;
+        const tIm = re[b] * curIm + im[b] * curRe;
+        re[b] = re[a] - tRe;
+        im[b] = im[a] - tIm;
+        re[a] += tRe;
+        im[a] += tIm;
+        const nextRe = curRe * wRe - curIm * wIm;
+        curIm = curRe * wIm + curIm * wRe;
+        curRe = nextRe;
+      }
+    }
+  }
 }
 
-/** Where the beat grid starts, as the circular mean of the peak phases. */
-function beatOffset(peaks, sampleRate, period) {
+/**
+ * Spectral flux: how much energy rises between successive spectra. Onsets of
+ * any instrument show up here, unlike a plain amplitude threshold which only
+ * catches loud low-frequency hits.
+ */
+function onsetEnvelope(samples) {
+  const frames = Math.floor((samples.length - FRAME) / HOP);
+  if (frames < 16) return null;
+
+  const window = new Float32Array(FRAME);
+  for (let i = 0; i < FRAME; i += 1) window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FRAME);
+
+  const bins = FRAME / 2;
+  const previous = new Float32Array(bins);
+  const flux = new Float32Array(frames);
+  const re = new Float32Array(FRAME);
+  const im = new Float32Array(FRAME);
+
+  for (let frame = 0; frame < frames; frame += 1) {
+    const start = frame * HOP;
+    for (let i = 0; i < FRAME; i += 1) {
+      re[i] = samples[start + i] * window[i];
+      im[i] = 0;
+    }
+    fft(re, im);
+    let sum = 0;
+    for (let bin = 0; bin < bins; bin += 1) {
+      const magnitude = Math.log1p(20 * Math.hypot(re[bin], im[bin]));
+      const rise = magnitude - previous[bin];
+      if (rise > 0) sum += rise;
+      previous[bin] = magnitude;
+    }
+    flux[frame] = sum;
+  }
+
+  // keep only what stands out from its neighbourhood, so slow build-ups and
+  // overall loudness changes do not drown the beats
+  const half = Math.round(FPS * 0.12);
+  const envelope = new Float32Array(frames);
+  for (let frame = 0; frame < frames; frame += 1) {
+    let sum = 0;
+    let count = 0;
+    for (let i = Math.max(frame - half, 0); i < Math.min(frame + half, frames); i += 1) {
+      sum += flux[i];
+      count += 1;
+    }
+    envelope[frame] = Math.max(flux[frame] - sum / count, 0);
+  }
+  return envelope;
+}
+
+function autocorrelation(envelope, maxLag) {
+  const values = new Float32Array(maxLag + 1);
+  for (let lag = 1; lag <= maxLag; lag += 1) {
+    let sum = 0;
+    for (let i = 0; i + lag < envelope.length; i += 1) sum += envelope[i] * envelope[i + lag];
+    values[lag] = sum / (envelope.length - lag);
+  }
+  return values;
+}
+
+function at(values, lag) {
+  if (lag < 1 || lag >= values.length - 1) return 0;
+  const low = Math.floor(lag);
+  return values[low] + (values[low + 1] - values[low]) * (lag - low);
+}
+
+/**
+ * Comb-filter score: a real tempo lines up with the onset envelope at its beat
+ * period and at whole multiples of it, which rules out periods that are not a
+ * beat at all.
+ */
+function combScore(correlation, bpm) {
+  const lag = (FPS * 60) / bpm;
+  return (
+    at(correlation, lag) +
+    0.7 * at(correlation, lag * 2) +
+    0.5 * at(correlation, lag * 3) +
+    0.3 * at(correlation, lag * 4)
+  );
+}
+
+/** Multiples of a beat score alike, so lean towards a human-countable tempo. */
+function scoreTempo(correlation, bpm) {
+  const distance = Math.log2(bpm / PREFERRED_BPM) / PREFERENCE_WIDTH;
+  return combScore(correlation, bpm) * Math.exp(-0.5 * distance * distance);
+}
+
+/** Where the beat grid starts: the phase the onset energy clusters around. */
+function beatPhase(envelope, lag) {
   let x = 0;
   let y = 0;
-  for (const peak of peaks) {
-    const angle = ((peak / sampleRate) % period) * ((2 * Math.PI) / period);
-    x += Math.cos(angle);
-    y += Math.sin(angle);
+  for (let frame = 0; frame < envelope.length; frame += 1) {
+    const angle = (2 * Math.PI * frame) / lag;
+    x += envelope[frame] * Math.cos(angle);
+    y += envelope[frame] * Math.sin(angle);
   }
-  const mean = Math.atan2(y, x) / ((2 * Math.PI) / period);
-  return mean < 0 ? mean + period : mean;
+  const frames = (Math.atan2(y, x) / (2 * Math.PI)) * lag;
+  const seconds = frames / FPS;
+  const period = lag / FPS;
+  return ((seconds % period) + period) % period;
 }
 
 /**
@@ -73,32 +167,32 @@ export async function detectBpm(buffer) {
   if (buffer.duration < 5) return null;
   if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return null;
 
-  const samples = await lowEnd(buffer);
-  const loudest = samples.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
-  if (loudest === 0) return null;
+  const envelope = onsetEnvelope(await monoSamples(buffer));
+  if (!envelope) return null;
 
-  let peaks = [];
-  for (let ratio = 0.9; ratio >= 0.3; ratio -= 0.05) {
-    peaks = peaksAbove(samples, loudest * ratio, buffer.sampleRate);
-    if (peaks.length > 30) break;
-  }
-  if (peaks.length < 10) return null;
+  const energy = envelope.reduce((sum, value) => sum + value, 0);
+  if (energy === 0) return null;
 
-  const counts = tempoCounts(peaks, buffer.sampleRate);
+  const correlation = autocorrelation(envelope, Math.ceil(((FPS * 60) / MIN_BPM) * 4));
+
   let best = null;
-  let bestCount = 0;
+  let bestScore = 0;
   let total = 0;
-  for (const [tempo, count] of counts) {
-    total += count;
-    // fold neighbouring estimates together, they are the same tempo
-    const grouped = count + (counts.get(tempo - 1) || 0) + (counts.get(tempo + 1) || 0);
-    if (grouped > bestCount) {
-      bestCount = grouped;
-      best = tempo;
+  let candidates = 0;
+  for (let bpm = MIN_BPM; bpm <= MAX_BPM; bpm += 0.1) {
+    const score = scoreTempo(correlation, bpm);
+    total += Math.max(score, 0);
+    candidates += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = bpm;
     }
   }
 
-  // a flat histogram means no tempo was actually found
-  if (!best || bestCount / total < 0.05) return null;
-  return { bpm: best, offset: beatOffset(peaks, buffer.sampleRate, 60 / best) };
+  // a flat score curve means the track has no tempo to find
+  const average = total / candidates;
+  if (!best || average <= 0 || bestScore / average < 1.5) return null;
+
+  const bpm = Math.round(best * 10) / 10;
+  return { bpm, offset: beatPhase(envelope, (FPS * 60) / bpm) };
 }
