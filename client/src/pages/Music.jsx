@@ -69,11 +69,20 @@ function drawWaveform(context, columns, width, height, playhead) {
   }
 }
 
-/** Beat ticks every 60/bpm seconds, with a taller line on each bar (4 beats). */
+/**
+ * Beat ticks every 60/bpm seconds, with a taller line and a bar number on each
+ * bar (4 beats). Numbers are dropped when bars are too close to read.
+ */
 function drawBeatGrid(context, beat, width, height, from, to) {
   if (!beat || to <= from) return;
   const period = 60 / beat.bpm;
   const phase = beat.offset % period;
+  const barSpacing = ((period * 4) / (to - from)) * width;
+  const numbered = barSpacing >= 34;
+
+  context.font = '10px system-ui, sans-serif';
+  context.textBaseline = 'top';
+
   for (let index = Math.max(Math.ceil((from - phase) / period), 0); ; index += 1) {
     const time = phase + index * period;
     if (time > to) break;
@@ -84,6 +93,10 @@ function drawBeatGrid(context, beat, width, height, from, to) {
     context.moveTo(x, downbeat ? 0 : height * 0.12);
     context.lineTo(x, downbeat ? height : height * 0.88);
     context.stroke();
+    if (downbeat && numbered) {
+      context.fillStyle = 'rgba(226, 232, 240, 0.75)';
+      context.fillText(String(index / 4 + 1), x + 3, 2);
+    }
   }
 }
 
@@ -279,8 +292,11 @@ export default function Music() {
 
         const tempo = await detectBpm(decoded);
         if (cancelled) return;
-        setBpm(tempo);
-        if (tempo && tempo.bpm !== current?.bpm) {
+        // a stored tempo may have been corrected by hand, so keep it and only
+        // take the beat offset from this pass
+        const saved = current?.bpm;
+        setBpm(tempo && saved ? { ...tempo, bpm: saved } : tempo);
+        if (tempo && !saved) {
           const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: tempo.bpm });
           setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
         }
