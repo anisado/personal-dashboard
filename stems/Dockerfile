@@ -9,8 +9,13 @@ ENV PIP_NO_CACHE_DIR=1 \
     PORT=8001 \
     DATA_DIR=/data
 
-# the CPU wheels of torch and torchaudio have to come from the same release
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.4.1+cpu torchaudio==2.4.1+cpu \
+# torch and torchaudio have to come from the same release; the +cpu wheels only
+# exist for x86_64, while the plain arm64 wheels are CPU-only anyway
+RUN if [ "$(uname -m)" = "x86_64" ]; then \
+      pip install --index-url https://download.pytorch.org/whl/cpu torch==2.4.1+cpu torchaudio==2.4.1+cpu; \
+    else \
+      pip install torch==2.4.1 torchaudio==2.4.1; \
+    fi \
   && pip install demucs==4.0.1 flask==3.0.3
 
 WORKDIR /app
