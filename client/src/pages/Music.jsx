@@ -556,7 +556,7 @@ export default function Music() {
       <ErrorBanner message={error} />
 
       <div
-        className={dragging ? 'dropzone dragging' : 'dropzone'}
+        className={dragging ? 'dropzone slim dragging' : 'dropzone slim'}
         onDragOver={(event) => {
           event.preventDefault();
           setDragging(true);
@@ -568,29 +568,23 @@ export default function Music() {
           uploadFiles(event.dataTransfer.files);
         }}
       >
-        <p>{uploading ? 'uploading…' : 'Drop audio files here'}</p>
-        <div className="row">
-          <input
-            type="file"
-            accept="audio/*,.mp3,.m4a,.flac,.ogg,.opus,.wav"
-            multiple
-            ref={fileRef}
-            onChange={(event) => uploadFiles(event.target.files)}
-          />
-        </div>
+        <span className="drop-glyph">♫</span>
+        <span className="muted">{uploading ? 'uploading…' : 'Drop audio files here'}</span>
+        <button type="button" className="pill" onClick={() => fileRef.current?.click()}>
+          Choose files
+        </button>
+        <input
+          type="file"
+          className="hidden-input"
+          accept="audio/*,.mp3,.m4a,.flac,.ogg,.opus,.wav"
+          multiple
+          ref={fileRef}
+          onChange={(event) => uploadFiles(event.target.files)}
+        />
       </div>
 
-      <Card title={current ? `${current.title}${current.artist ? ` — ${current.artist}` : ''}` : 'Nothing playing'}>
+      <Card className="player">
         <div className="form-stack">
-          <div className="row">
-            <span className="tag">{tempoLabel}</span>
-            <button type="button" className="ghost" onClick={() => scaleTempo(0.5)} disabled={!tempo}>
-              ÷2
-            </button>
-            <button type="button" className="ghost" onClick={() => scaleTempo(2)} disabled={!tempo}>
-              ×2
-            </button>
-          </div>
           <audio
             ref={audioRef}
             src={current ? `${BASE}/music/tracks/${current.id}/stream` : undefined}
@@ -610,12 +604,39 @@ export default function Music() {
             }}
           />
 
-          <div className="player-row">
+          <div className="player-head">
             {current?.cover ? (
               <img className="cover" src={`${BASE}/music/tracks/${current.id}/cover`} alt="" />
             ) : (
               <div className="cover cover-empty">♫</div>
             )}
+            <div className="player-meta">
+              <h2 className="player-title">{current ? current.title : 'Nothing playing'}</h2>
+              <p className="muted player-sub">
+                {current ? [current.artist, current.album].filter(Boolean).join(' · ') || 'unknown artist' : 'pick a track from the library'}
+              </p>
+              <div className="chips">
+                <span className="chip">{tempoLabel}</span>
+                <button type="button" className="chip tap" onClick={() => scaleTempo(0.5)} disabled={!tempo}>
+                  ÷2
+                </button>
+                <button type="button" className="chip tap" onClick={() => scaleTempo(2)} disabled={!tempo}>
+                  ×2
+                </button>
+                <span className="chip ghost-chip">
+                  {zoom > 1 ? `${zoom.toFixed(1).replace(/\.0$/, '')}×` : '1×'}
+                </span>
+                <button type="button" className="chip tap" onClick={() => changeZoom(zoom / 2)} disabled={!current || zoom <= 1}>
+                  −
+                </button>
+                <button type="button" className="chip tap" onClick={() => changeZoom(zoom * 2)} disabled={!current || zoom >= MAX_ZOOM}>
+                  +
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="player-wave">
             <Waveform
               peaks={peaks}
               beat={bpm}
@@ -628,19 +649,65 @@ export default function Music() {
             />
           </div>
 
-          <div className="row">
-            <button type="button" onClick={() => changeZoom(zoom / 2)} disabled={!current || zoom <= 1}>
-              − zoom
+          <div className="transport">
+            <button type="button" className="icon-btn" onClick={() => step(-1)} disabled={!current} title="previous">
+              ◀◀
             </button>
-            <button type="button" onClick={() => changeZoom(zoom * 2)} disabled={!current || zoom >= MAX_ZOOM}>
-              + zoom
+            <button
+              type="button"
+              className="icon-btn primary"
+              onClick={() => current && play(current)}
+              disabled={!current}
+              title={playing ? 'pause' : 'play'}
+            >
+              {playing ? '❚❚' : '▶'}
             </button>
-            <span className="muted">
-              {zoom > 1 ? `${zoom.toFixed(1).replace(/\.0$/, '')}× around the playhead` : 'whole track'}
+            <button type="button" className="icon-btn" onClick={() => step(1)} disabled={!current} title="next">
+              ▶▶
+            </button>
+            <span className="time">{clock(progress.time)}</span>
+            <input
+              className="scrub"
+              type="range"
+              min="0"
+              max={progress.duration || 0}
+              step="0.5"
+              value={progress.time}
+              disabled={!current}
+              onChange={(event) => seek(Number(event.target.value))}
+            />
+            <span className="time muted">{clock(progress.duration)}</span>
+            <button
+              type="button"
+              className={shuffle ? 'icon-btn on' : 'icon-btn'}
+              onClick={() => setShuffle(!shuffle)}
+              title="shuffle"
+            >
+              ⇄
+            </button>
+            <button
+              type="button"
+              className={repeat === 'off' ? 'icon-btn' : 'icon-btn on'}
+              onClick={() => setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off')}
+              title={`repeat: ${repeat}`}
+            >
+              {repeat === 'one' ? '↻1' : '↻'}
+            </button>
+            <span className="icon-btn flat" title="volume">
+              ♪
             </span>
+            <input
+              className="vol"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={volume}
+              onChange={(event) => setVolume(Number(event.target.value))}
+            />
           </div>
 
-          <div className="row">
+          <div className="row stems-row">
             {separated ? (
               stems.stems.map((name) => {
                 const settings = mix[name] ?? {};
@@ -681,7 +748,7 @@ export default function Music() {
               })
             ) : (
               <>
-                <button type="button" onClick={separate} disabled={!current || stems.state === 'running'}>
+                <button type="button" className="pill" onClick={separate} disabled={!current || stems.state === 'running'}>
                   {stems.state === 'running' ? 'separating stems…' : 'Separate stems'}
                 </button>
                 <span className="muted">
@@ -695,58 +762,10 @@ export default function Music() {
             )}
           </div>
 
-          <div className="row">
-            <button type="button" onClick={() => step(-1)} disabled={!current}>
-              ◀◀ Prev
-            </button>
-            <button type="button" onClick={() => current && play(current)} disabled={!current}>
-              {playing ? '❚❚ Pause' : '▶ Play'}
-            </button>
-            <button type="button" onClick={() => step(1)} disabled={!current}>
-              Next ▶▶
-            </button>
-            <span className="muted">
-              {clock(progress.time)} / {clock(progress.duration)}
-            </span>
-          </div>
-
-          <input
-            type="range"
-            min="0"
-            max={progress.duration || 0}
-            step="0.5"
-            value={progress.time}
-            disabled={!current}
-            onChange={(event) => seek(Number(event.target.value))}
-          />
-
-          <div className="row">
-            <label className="row">
-              <span className="muted">volume</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={volume}
-                onChange={(event) => setVolume(Number(event.target.value))}
-              />
-            </label>
-            <button type="button" className={shuffle ? 'tab active' : 'tab'} onClick={() => setShuffle(!shuffle)}>
-              shuffle
-            </button>
-            <button
-              type="button"
-              className="tab"
-              onClick={() => setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off')}
-            >
-              repeat: {repeat}
-            </button>
-          </div>
         </div>
       </Card>
 
-      <Card title={`Playlists (${playlists.length})`}>
+      <Card className="playlists" title={`Playlists (${playlists.length})`}>
         <div className="row">
           <button type="button" className={playlistId ? 'tab' : 'tab active'} onClick={() => setPlaylistId(null)}>
             All tracks ({tracks.length})
@@ -779,9 +798,14 @@ export default function Music() {
         </div>
       </Card>
 
-      <Card title={playlist ? `${playlist.name} (${visible.length})` : `Library (${tracks.length})`}>
-        <div className="row">
-          <input placeholder="Search title, artist or album" value={search} onChange={(event) => setSearch(event.target.value)} />
+      <Card className="library" title={playlist ? `${playlist.name} (${visible.length})` : `Library (${tracks.length})`}>
+        <div className="row toolbar">
+          <input
+            className="grow"
+            placeholder="Search title, artist or album"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
           <span className="muted">rows</span>
           {ROW_SIZES.map((size) => (
             <button
@@ -793,7 +817,7 @@ export default function Music() {
               {size}
             </button>
           ))}
-          <button type="button" onClick={analyseAll} disabled={queueing || pending.length === 0}>
+          <button type="button" className="pill" onClick={analyseAll} disabled={queueing || pending.length === 0}>
             {queueing ? 'queueing…' : `${playlist ? 'Analyze playlist' : 'Analyze all'} (${pending.length})`}
           </button>
           <span className="muted">
@@ -816,7 +840,7 @@ export default function Music() {
               const state = library.tracks[track.id] ?? { state: 'idle', progress: 0 };
               return (
                 <li key={track.id} className={track.id === currentId ? 'active' : undefined}>
-                  <button type="button" onClick={() => play(track)}>
+                  <button type="button" className="icon-btn small" onClick={() => play(track)}>
                     {track.id === currentId && playing ? '❚❚' : '▶'}
                   </button>
                   {track.cover ? (
@@ -843,16 +867,14 @@ export default function Music() {
                     }
                     onBlur={(event) => rename(track, 'artist', event.target.value)}
                   />
-                  <span className="muted">{track.bpm ? `${track.bpm} BPM` : ''}</span>
-                  <span className="muted">
-                    {state.state === 'done'
-                      ? 'stems ✓'
-                      : state.state === 'running'
-                        ? `stems ${Math.round((state.progress || 0) * 100)}%`
-                        : state.state === 'failed'
-                          ? 'stems failed'
-                          : ''}
-                  </span>
+                  {track.bpm ? <span className="chip ghost-chip">{track.bpm} BPM</span> : null}
+                  {state.state === 'done' ? (
+                    <span className="chip done-chip">stems</span>
+                  ) : state.state === 'running' ? (
+                    <span className="chip busy-chip">{Math.round((state.progress || 0) * 100)}%</span>
+                  ) : state.state === 'failed' ? (
+                    <span className="chip fail-chip">failed</span>
+                  ) : null}
                   <span className="muted right">{(track.size / 1024 / 1024).toFixed(1)} MB</span>
                   {playlist ? (
                     <button type="button" className="ghost" onClick={() => removeFromPlaylist(track.id)}>

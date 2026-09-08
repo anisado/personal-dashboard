@@ -296,25 +296,231 @@ button.ghost:hover {
   color: var(--text);
 }
 
-.player-row {
+.dropzone.slim {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+}
+
+.drop-glyph {
+  font-size: 16px;
+}
+
+.hidden-input {
+  display: none;
+}
+
+.pill {
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+
+.card.player {
+  padding: 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(124, 92, 255, 0.16), transparent 60%),
+    radial-gradient(120% 140% at 100% 0%, rgba(76, 141, 255, 0.14), transparent 55%),
+    var(--panel);
+}
+
+.card.player .form-stack {
+  gap: 10px;
+}
+
+.player-head {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 14px;
+  grid-template-columns: 64px 1fr;
+  gap: 12px;
   align-items: center;
 }
 
 .cover {
-  width: 120px;
-  height: 120px;
-  border-radius: 10px;
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
   object-fit: cover;
   background: var(--panel-2);
+}
+
+.player-meta {
+  min-width: 0;
+}
+
+.player-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-sub {
+  margin: 2px 0 6px;
+  font-size: 12px;
+}
+
+.chips {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.chip.ghost-chip {
+  color: var(--muted);
+}
+
+.chip.done-chip {
+  color: var(--green);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+
+.chip.busy-chip {
+  color: var(--amber);
+  border-color: rgba(210, 153, 34, 0.4);
+}
+
+.chip.fail-chip {
+  color: var(--red);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+button.chip.tap {
+  cursor: pointer;
+  padding: 0 8px;
+  color: var(--muted);
+}
+
+button.chip.tap:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.icon-btn.small {
+  width: 26px;
+  height: 26px;
+  font-size: 10px;
+}
+
+.icon-btn.primary {
+  width: 38px;
+  height: 38px;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), #7c5cff);
+  font-size: 14px;
+  box-shadow: 0 4px 14px rgba(76, 141, 255, 0.35);
+}
+
+.icon-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.icon-btn.flat {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  min-width: 38px;
+  text-align: center;
+}
+
+.transport .scrub {
+  flex: 1;
+  min-width: 80px;
+}
+
+.transport .vol {
+  width: 80px;
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.stems-row {
+  gap: 6px;
+  font-size: 12px;
+}
+
+.library .toolbar {
+  margin-bottom: 8px;
 }
 
 .cover-empty {
   display: grid;
   place-items: center;
-  font-size: 34px;
+  font-size: 24px;
   color: var(--muted);
 }
 
@@ -351,11 +557,12 @@ button.ghost:hover {
 
 .waveform canvas {
   width: 100%;
-  height: 120px;
+  height: 104px;
   display: block;
   cursor: pointer;
-  background: var(--panel-2);
-  border-radius: 10px;
+  background: rgba(10, 14, 20, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 14px;
 }
 
 .waveform-note {
