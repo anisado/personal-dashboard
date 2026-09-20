@@ -77,7 +77,14 @@ Splitting a song into vocals/drums/bass/other needs the optional Demucs service:
 docker compose --profile stems up -d --build
 ```
 
-The API detects it automatically (override with `STEMS_URL`), so the "Separate stems" button in the Music tab then works. The first build downloads PyTorch (~200 MB) and the first separation downloads the `htdemucs` model (~80 MB, cached in the `demucs-models` volume). Separation is CPU-bound — roughly real time per track on a typical laptop, one track at a time — and the resulting mp3 stems are cached in `DATA_DIR/music/stems/<track id>`, so a song is only separated once. Use another model with `DEMUCS_MODEL` (e.g. `htdemucs_ft`, slower and better).
+The API detects it automatically (override with `STEMS_URL`), so the "Separate stems" button in the Music tab then works. The first build downloads PyTorch (~200 MB) and the first separation downloads the `htdemucs` model (~80 MB, cached in the `demucs-models` volume). Separation is CPU-bound — roughly real time per track on a typical laptop, one track at a time — and the resulting mp3 stems are cached in `DATA_DIR/music/stems/<track id>`, so a song is only separated once. Use another model with `DEMUCS_MODEL` (e.g. `htdemucs_ft`, slower and better; `mdx_q` or `mdx_extra_q`, quantized and faster).
+
+Ways to make it faster:
+
+- `DEMUCS_JOBS` (default `4` in compose) splits each track across that many parallel workers — raise it if you give Docker more cores, lower it if memory gets tight (each worker loads the model).
+- `DEMUCS_OVERLAP` below the `0.25` default (e.g. `0.1`) cuts ~a quarter of the compute at a small quality cost at chunk boundaries.
+- `DEMUCS_MODEL=mdx_q` uses a quantized model — noticeably faster on CPU, slightly lower separation quality than `htdemucs`.
+- On Apple Silicon the big win is running the service on the host where Demucs can use the GPU: `pip install demucs flask` then `DATA_DIR=<the shared data dir> DEMUCS_DEVICE=mps python stems/app.py` — the API finds a service on host port 8001 automatically. This needs `DATA_DIR` to be a path on the host (a bind mount), not a named Docker volume.
 
 ## API
 

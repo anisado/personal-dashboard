@@ -107,7 +107,18 @@ router.patch('/tracks/:id', async (req, res) => {
   for (const field of ['title', 'artist', 'album']) {
     if (typeof req.body?.[field] === 'string') payload[field] = req.body[field].trim().slice(0, 200);
   }
-  if (Number.isFinite(req.body?.bpm)) payload.bpm = Math.round(req.body.bpm);
+  if (Number.isFinite(req.body?.bpm)) payload.bpm = Math.round(req.body.bpm * 10) / 10;
+  if (['mix', 'drums', 'manual'].includes(req.body?.bpmSource)) payload.bpmSource = req.body.bpmSource;
+  if (Array.isArray(req.body?.bpmMap)) {
+    payload.bpmMap = req.body.bpmMap
+      .filter((seg) => Number.isFinite(seg?.start) && Number.isFinite(seg?.bpm))
+      .slice(0, 128)
+      .map((seg) => ({
+        start: Math.max(0, Math.round(seg.start * 100) / 100),
+        bpm: Math.round(seg.bpm * 100) / 100
+      }))
+      .sort((a, b) => a.start - b.start);
+  }
   const track = await store.update('tracks', req.params.id, payload);
   if (!track) return res.status(404).json({ error: 'Not found' });
   res.json(track);
@@ -180,12 +191,17 @@ router.get('/stems/library', async (req, res, next) => {
     const service = await resolveStems();
     const states = {};
     for (const track of await store.list('tracks')) {
+      const job = track.stemJob && service ? await separationJob(service.baseUrl, track.stemJob) : null;
+      // a re-run in flight matters more than the stems already on disk
+      if (job?.state === 'running') {
+        states[track.id] = job;
+        continue;
+      }
       const stems = await existingStems(track.id);
       if (stems.length > 0) {
         states[track.id] = { state: 'done', progress: 1, stems };
         continue;
       }
-      const job = track.stemJob && service ? await separationJob(service.baseUrl, track.stemJob) : null;
       states[track.id] = job ?? { state: 'idle', progress: 0, stems: [] };
     }
     res.json({ available: Boolean(service), tracks: states });
@@ -199,17 +215,24 @@ router.get('/tracks/:id/stems', async (req, res, next) => {
     const track = await store.get('tracks', req.params.id);
     if (!track) return res.status(404).json({ error: 'Not found' });
 
-    const stems = await existingStems(track.id);
-    if (stems.length > 0) return res.json({ state: 'done', progress: 1, stems });
-
     const service = await resolveStems();
-    if (track.stemJob && service) {
-      const job = await separationJob(service.baseUrl, track.stemJob);
-      if (job?.state === 'done') {
-        return res.json({ state: 'done', progress: 1, stems: await existingStems(track.id) });
-      }
-      if (job) return res.json(job);
+    const job = track.stemJob && service ? await separationJob(service.baseUrl, track.stemJob) : null;
+    // a re-run in flight matters more than the stems already on disk
+    if (job?.state === 'running') return res.json(job);
+
+    const stems = await existingStems(track.id);
+    if (stems.length > 0) {
+      return res.json({
+        state: 'done',
+        progress: 1,
+        stems,
+        ...(job?.state === 'failed' ? { error: job.error } : {})
+      });
     }
+    if (job?.state === 'done') {
+      return res.json({ state: 'done', progress: 1, stems: await existingStems(track.id) });
+    }
+    if (job) return res.json(job);
     res.json({ state: 'idle', progress: 0, stems: [], available: Boolean(service) });
   } catch (err) {
     next(err);

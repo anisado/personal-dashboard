@@ -17,6 +17,14 @@ from flask import Flask, jsonify, request
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 MODEL = os.environ.get("DEMUCS_MODEL", "htdemucs")
+# optional demucs flags: --jobs parallelizes each track across cores,
+# --device picks the torch device (mps is the fast path on Apple Silicon),
+# --overlap below the 0.25 default trades a little boundary quality for speed
+EXTRA_FLAGS = {
+    "--jobs": os.environ.get("DEMUCS_JOBS", "").strip(),
+    "--device": os.environ.get("DEMUCS_DEVICE", "").strip(),
+    "--overlap": os.environ.get("DEMUCS_OVERLAP", "").strip(),
+}
 STEMS = ("vocals", "drums", "bass", "other")
 PERCENT = re.compile(r"(\d+)%\|")
 
@@ -44,8 +52,11 @@ def run(job_id: str, source: Path, target: Path) -> None:
             "--mp3", "--mp3-bitrate", "192",
             "-o", str(target),
             "--filename", "{stem}.{ext}",
-            str(source),
         ]
+        for flag, value in EXTRA_FLAGS.items():
+            if value:
+                command += [flag, value]
+        command.append(str(source))
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
@@ -79,7 +90,12 @@ def run(job_id: str, source: Path, target: Path) -> None:
 
 @app.get("/health")
 def health():
-    return jsonify(model=MODEL, stems=list(STEMS))
+    return jsonify(
+        model=MODEL,
+        stems=list(STEMS),
+        jobs=EXTRA_FLAGS["--jobs"] or "1",
+        device=EXTRA_FLAGS["--device"] or "cpu",
+    )
 
 
 @app.post("/separate")

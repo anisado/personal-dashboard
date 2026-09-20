@@ -28,6 +28,10 @@ services:
     environment:
       DATA_DIR: /data
       DEMUCS_MODEL: ${DEMUCS_MODEL:-htdemucs}
+      # each job is a worker process on a chunk of the track — more cores, more speed
+      DEMUCS_JOBS: ${DEMUCS_JOBS:-4}
+      DEMUCS_DEVICE: ${DEMUCS_DEVICE:-}
+      DEMUCS_OVERLAP: ${DEMUCS_OVERLAP:-}
     volumes:
       - dashboard-data:/data
       - demucs-models:/models

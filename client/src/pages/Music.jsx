@@ -71,22 +71,41 @@ function drawWaveform(context, columns, width, height, playhead) {
 }
 
 /**
+ * Beat times inside [from, to], stepping with the tempo of each map section so
+ * the grid follows tempo changes. The beat clock carries over each boundary,
+ * so a tempo change lands on the next beat rather than mid-bar.
+ */
+function beatsInRange(beat, from, to) {
+  const map = beat.map?.length > 0 ? beat.map : [{ start: 0, bpm: beat.bpm }];
+  const beats = [];
+  let time = beat.offset;
+  let index = 0;
+  for (let seg = 0; seg < map.length; seg += 1) {
+    const period = 60 / map[seg].bpm;
+    const end = map[seg + 1]?.start ?? Infinity;
+    while (time < end) {
+      if (time > to) return beats;
+      if (time >= from) beats.push({ time, index });
+      time += period;
+      index += 1;
+    }
+  }
+  return beats;
+}
+
+/**
  * Beat ticks every 60/bpm seconds, with a taller line and a bar number on each
  * bar (4 beats). Numbers are dropped when bars are too close to read.
  */
 function drawBeatGrid(context, beat, width, height, from, to) {
   if (!beat || to <= from) return;
-  const period = 60 / beat.bpm;
-  const phase = beat.offset % period;
-  const barSpacing = ((period * 4) / (to - from)) * width;
+  const barSpacing = (((60 / beat.bpm) * 4) / (to - from)) * width;
   const numbered = barSpacing >= 34;
 
   context.font = '10px system-ui, sans-serif';
   context.textBaseline = 'top';
 
-  for (let index = Math.max(Math.ceil((from - phase) / period), 0); ; index += 1) {
-    const time = phase + index * period;
-    if (time > to) break;
+  for (const { time, index } of beatsInRange(beat, from, to)) {
     const x = ((time - from) / (to - from)) * width;
     const downbeat = index % 4 === 0;
     context.strokeStyle = downbeat ? 'rgba(226, 232, 240, 0.55)' : 'rgba(148, 163, 184, 0.22)';
@@ -205,6 +224,7 @@ export default function Music() {
   const [analysing, setAnalysing] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [stems, setStems] = useState({ state: 'idle', progress: 0, stems: [] });
+  const [stemsRun, setStemsRun] = useState(0);
   const [mix, setMix] = useState({});
   const [stemPeaks, setStemPeaks] = useState(null);
   const [stemPeaksLoading, setStemPeaksLoading] = useState(false);
@@ -217,6 +237,10 @@ export default function Music() {
   const audioRef = useRef(null);
   const fileRef = useRef(null);
   const stemRefs = useRef({});
+  const currentRef = useRef(null);
+  const currentIdRef = useRef(null);
+  const stemsRef = useRef(stems);
+  const pendingTempo = useRef(false);
 
   const separated = stems.state === 'done' && stems.stems.length > 0;
 
@@ -294,8 +318,10 @@ export default function Music() {
   const separate = async () => {
     if (!currentId) return;
     try {
-      await api.post(`/music/tracks/${currentId}/stems`, {});
-      setStems({ state: 'running', progress: 0, stems: [] });
+      const job = await api.post(`/music/tracks/${currentId}/stems`, {});
+      // a new run produces new files under the same URLs, so bust the cache
+      setStemsRun((run) => run + 1);
+      setStems({ state: 'running', progress: 0, stems: [], id: job.id });
     } catch (err) {
       setError(err.message);
     }
@@ -303,6 +329,79 @@ export default function Music() {
 
   const setStemSetting = (name, patch) =>
     setMix((current) => ({ ...current, [name]: { gain: 1, ...current[name], ...patch } }));
+
+  /**
+   * Fold a fresh tempo reading into what is stored: a manually corrected or
+   * drums-derived BPM is trusted and only takes the beat offset, a full-mix
+   * guess is replaced by anything better, and the tempo map is stored so the
+   * beat grid can follow tempo changes inside the track.
+   */
+  const applyTempo = async (tempo, source, trackId) => {
+    if (!tempo || currentIdRef.current !== trackId) return;
+    const track = currentRef.current;
+    const keep = track?.bpm && track?.bpmSource !== 'mix';
+    if (keep && source === 'mix' && track?.bpmSource === 'drums') return;
+
+    // a fresh map only rides along with a trusted tempo when it agrees with it
+    const map = keep
+      ? track.bpmMap ??
+        (tempo.map && Math.abs(tempo.bpm - track.bpm) / track.bpm < 0.03 ? tempo.map : null)
+      : tempo.map ?? null;
+    setBpm({ bpm: keep ? track.bpm : tempo.bpm, offset: tempo.offset, map });
+
+    const patch = {};
+    if (!keep) {
+      patch.bpm = tempo.bpm;
+      patch.bpmSource = source;
+      if (map) patch.bpmMap = map;
+    } else if (!track.bpmMap && map) {
+      patch.bpmMap = map;
+    }
+    if (Object.keys(patch).length === 0) return;
+    try {
+      const updated = await api.patch(`/music/tracks/${trackId}`, patch);
+      setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  /** Detect the tempo off the isolated drums stem, or the full mix when there are no stems yet. */
+  const detectTempo = async () => {
+    const trackId = currentIdRef.current;
+    if (!trackId) return;
+    setAnalysing(true);
+    let context;
+    try {
+      const drums = stemsRef.current.stems?.includes('drums');
+      const url = drums
+        ? `${BASE}/music/tracks/${trackId}/stems/drums/stream?v=${stemsRun}`
+        : `${BASE}/music/tracks/${trackId}/stream`;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`could not read ${drums ? 'the drums stem' : 'the track'}`);
+      context = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await context.decodeAudioData(await response.arrayBuffer());
+      await applyTempo(await detectBpm(decoded), drums ? 'drums' : 'mix', trackId);
+    } catch (err) {
+      if (currentIdRef.current === trackId) setError(`BPM detection failed: ${err.message}`);
+    } finally {
+      context?.close();
+      if (currentIdRef.current === trackId) setAnalysing(false);
+    }
+  };
+
+  /** One click: separate the stems if needed, then read the tempo off the drums. */
+  const analyse = async (force = false) => {
+    if (!currentId) return;
+    setError(null);
+    if (separated && !force) {
+      pendingTempo.current = false;
+      await detectTempo();
+      return;
+    }
+    pendingTempo.current = true;
+    await separate();
+  };
 
   const load = () => api.get('/music/tracks').then(setTracks).catch((err) => setError(err.message));
   const loadPlaylists = () => api.get('/music/playlists').then(setPlaylists).catch(() => {});
@@ -390,19 +489,56 @@ export default function Music() {
     setQueueing(true);
     setError(null);
     let failed = 0;
+    let queued = 0;
     for (const track of pending) {
+      if (library.tracks[track.id]?.state === 'running') continue;
+      queued += 1;
       try {
         await api.post(`/music/tracks/${track.id}/stems`, {});
       } catch {
         failed += 1;
       }
     }
-    if (failed > 0) setError(`${failed} of ${pending.length} tracks could not be queued`);
+    if (failed > 0) setError(`${failed} of ${queued} tracks could not be queued`);
+    await loadLibraryStems();
+    setQueueing(false);
+  };
+
+  /** Re-run separation on every listed track, including ones already analyzed. */
+  const reanalyseAll = async () => {
+    setQueueing(true);
+    setError(null);
+    let failed = 0;
+    let queued = 0;
+    for (const track of visible) {
+      if (library.tracks[track.id]?.state === 'running') continue;
+      queued += 1;
+      try {
+        const job = await api.post(`/music/tracks/${track.id}/stems`, {});
+        if (track.id === currentId) {
+          pendingTempo.current = true;
+          setStemsRun((run) => run + 1);
+          setStems({ state: 'running', progress: 0, stems: [], id: job.id });
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed > 0) setError(`${failed} of ${queued} tracks could not be queued`);
     await loadLibraryStems();
     setQueueing(false);
   };
 
   const current = tracks.find((track) => track.id === currentId) ?? null;
+
+  useEffect(() => {
+    currentRef.current = current;
+    currentIdRef.current = current?.id ?? null;
+  }, [current]);
+
+  useEffect(() => {
+    stemsRef.current = stems;
+  }, [stems]);
 
   const play = (track) => {
     if (track.id === currentId) {
@@ -458,9 +594,10 @@ export default function Music() {
       try {
         const analysed = {};
         for (const name of names) {
-          const response = await fetch(`${BASE}/music/tracks/${currentId}/stems/${name}/stream`, {
-            signal: controller.signal
-          });
+          const response = await fetch(
+            `${BASE}/music/tracks/${currentId}/stems/${name}/stream?v=${stemsRun}`,
+            { signal: controller.signal }
+          );
           const decoded = await context.decodeAudioData(await response.arrayBuffer());
           if (cancelled) return;
           analysed[name] = await analyseWaveform(decoded, { normalised: false });
@@ -478,7 +615,7 @@ export default function Music() {
       cancelled = true;
       controller.abort();
     };
-  }, [separated, currentId, stemNames]);
+  }, [separated, currentId, stemNames, stemsRun]);
 
   useEffect(() => {
     if (!currentId) return;
@@ -486,6 +623,7 @@ export default function Music() {
     setMix({});
     setStemPeaks(null);
     stemRefs.current = {};
+    pendingTempo.current = false;
     api
       .get(`/music/tracks/${currentId}/stems`)
       .then(setStems)
@@ -516,15 +654,14 @@ export default function Music() {
         setPeaks(analysed);
         setPeaksLoading(false);
 
-        const tempo = await detectBpm(decoded);
-        if (cancelled) return;
-        // a stored tempo may have been corrected by hand, so keep it and only
-        // take the beat offset from this pass
-        const saved = current?.bpm;
-        setBpm(tempo && saved ? { ...tempo, bpm: saved } : tempo);
-        if (tempo && !saved) {
-          const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: tempo.bpm });
-          setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
+        // when the drums are already separated they give a much cleaner
+        // reading, and that pass runs in the stems effect instead
+        const stemsReady =
+          stemsRef.current.state === 'done' && stemsRef.current.stems?.includes('drums');
+        if (!stemsReady) {
+          const tempo = await detectBpm(decoded);
+          if (cancelled) return;
+          await applyTempo(tempo, 'mix', currentId);
         }
       } catch (err) {
         if (!cancelled && err.name !== 'AbortError') setPeaks(null);
@@ -542,6 +679,17 @@ export default function Music() {
       controller.abort();
     };
   }, [currentId]);
+
+  // once the stems land, the drums give a cleaner reading than the full mix:
+  // run it after an Analyze click, and to replace a tempo guessed on the mix
+  const bpmSource = current?.bpmSource;
+  useEffect(() => {
+    if (!currentId || !separated || !stems.stems.includes('drums')) return;
+    if (pendingTempo.current || bpmSource === 'mix' || (!bpmSource && !current?.bpm)) {
+      pendingTempo.current = false;
+      detectTempo();
+    }
+  }, [currentId, separated, bpmSource, stemNames]);
 
   const uploadFiles = useCallback(async (files) => {
     if (!files || files.length === 0) {
@@ -590,7 +738,21 @@ export default function Music() {
   };
 
   const tempo = bpm?.bpm ?? current?.bpm ?? null;
-  const tempoLabel = tempo ? `${tempo} BPM` : current ? (analysing ? 'detecting BPM…' : 'no steady beat') : 'BPM —';
+  const tempoMapRange =
+    bpm?.map?.length > 1
+      ? [Math.min(...bpm.map.map((seg) => seg.bpm)), Math.max(...bpm.map.map((seg) => seg.bpm))].map(
+          Math.round
+        )
+      : null;
+  const tempoLabel = tempoMapRange
+    ? `${tempoMapRange[0]}–${tempoMapRange[1]} BPM`
+    : tempo
+      ? `${tempo} BPM`
+      : current
+        ? analysing
+          ? 'detecting BPM…'
+          : 'no steady beat'
+        : 'BPM —';
 
   const changeZoom = (next) => setZoom(Math.min(Math.max(next, 1), MAX_ZOOM));
 
@@ -598,9 +760,18 @@ export default function Music() {
   const scaleTempo = async (factor) => {
     if (!tempo || !currentId) return;
     const scaled = Math.round(tempo * factor * 10) / 10;
-    setBpm((beat) => (beat ? { ...beat, bpm: scaled } : { bpm: scaled, offset: 0 }));
+    const scaledMap =
+      (bpm?.map ?? current?.bpmMap)?.map((seg) => ({
+        ...seg,
+        bpm: Math.round(seg.bpm * factor * 10) / 10
+      })) ?? null;
+    setBpm((beat) => ({ ...(beat ?? { offset: 0 }), bpm: scaled, map: scaledMap }));
     try {
-      const updated = await api.patch(`/music/tracks/${currentId}`, { bpm: scaled });
+      const updated = await api.patch(`/music/tracks/${currentId}`, {
+        bpm: scaled,
+        bpmSource: 'manual',
+        ...(scaledMap ? { bpmMap: scaledMap } : {})
+      });
       setTracks((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)));
     } catch (err) {
       setError(err.message);
@@ -683,6 +854,15 @@ export default function Music() {
               </p>
               <div className="chips">
                 <span className="chip">{tempoLabel}</span>
+                <button
+                  type="button"
+                  className="chip tap"
+                  onClick={detectTempo}
+                  disabled={!current || analysing}
+                  title={separated ? 're-detect BPM from the drums stem' : 're-detect BPM from the full mix'}
+                >
+                  ↺
+                </button>
                 <button type="button" className="chip tap" onClick={() => scaleTempo(0.5)} disabled={!tempo}>
                   ÷2
                 </button>
@@ -781,7 +961,8 @@ export default function Music() {
 
           <div className="row stems-row">
             {separated ? (
-              stems.stems.map((name) => {
+              <>
+              {stems.stems.map((name) => {
                 const settings = mix[name] ?? {};
                 return (
                   <span key={name} className="stem">
@@ -813,22 +994,38 @@ export default function Music() {
                         else delete stemRefs.current[name];
                       }}
                       preload="auto"
-                      src={`${BASE}/music/tracks/${currentId}/stems/${name}/stream`}
+                      src={`${BASE}/music/tracks/${currentId}/stems/${name}/stream?v=${stemsRun}`}
                     />
                   </span>
                 );
-              })
+              })}
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => analyse(true)}
+                disabled={analysing}
+                title="separate again and re-detect the BPM from the drums"
+              >
+                re-analyze
+              </button>
+              {stems.error ? <span className="muted">last run failed: {stems.error}</span> : null}
+              </>
             ) : (
               <>
-                <button type="button" className="pill" onClick={separate} disabled={!current || stems.state === 'running'}>
-                  {stems.state === 'running' ? 'separating stems…' : 'Separate stems'}
+                <button
+                  type="button"
+                  className="pill"
+                  onClick={() => analyse()}
+                  disabled={!current || stems.state === 'running' || analysing}
+                >
+                  {stems.state === 'running' ? 'analyzing…' : analysing ? 'detecting BPM…' : 'Analyze'}
                 </button>
                 <span className="muted">
                   {stems.state === 'running'
-                    ? `${Math.round((stems.progress || 0) * 100)}% — vocals, drums, bass and the rest`
+                    ? `${Math.round((stems.progress || 0) * 100)}% — separating stems, then BPM from the drums`
                     : stems.state === 'failed'
                       ? `separation failed: ${stems.error}`
-                      : 'split the track into vocals, drums, bass and other'}
+                      : 'separate the stems, then detect the BPM on the drums'}
                 </span>
               </>
             )}
@@ -891,6 +1088,15 @@ export default function Music() {
           ))}
           <button type="button" className="pill" onClick={analyseAll} disabled={queueing || pending.length === 0}>
             {queueing ? 'queueing…' : `${playlist ? 'Analyze playlist' : 'Analyze all'} (${pending.length})`}
+          </button>
+          <button
+            type="button"
+            className="pill"
+            onClick={reanalyseAll}
+            disabled={queueing || !library.available || visible.length === 0}
+            title="re-run stem separation for every listed track, including ones already analyzed"
+          >
+            Re-run all
           </button>
           <span className="muted">
             {library.available

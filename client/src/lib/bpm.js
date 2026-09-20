@@ -169,23 +169,8 @@ function alignGrid(envelope, lag) {
   return best;
 }
 
-/**
- * Estimate the tempo of a decoded track, with the offset of the first beat so
- * a beat grid can be drawn. Returns null when there is no clear beat (speech,
- * ambient recordings, very short clips).
- */
-export async function detectBpm(buffer) {
-  if (buffer.duration < 5) return null;
-  if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return null;
-
-  const envelope = onsetEnvelope(await monoSamples(buffer));
-  if (!envelope) return null;
-
-  const energy = envelope.reduce((sum, value) => sum + value, 0);
-  if (energy === 0) return null;
-
-  const correlation = autocorrelation(envelope, Math.ceil(((FPS * 60) / MIN_BPM) * 4));
-
+/** Highest-scoring tempo in a correlation curve, null when the curve is flat. */
+function scanTempo(correlation) {
   let best = null;
   let bestScore = 0;
   let total = 0;
@@ -199,10 +184,80 @@ export async function detectBpm(buffer) {
       best = bpm;
     }
   }
-
-  // a flat score curve means the track has no tempo to find
+  // a flat score curve means the audio has no tempo to find
   const average = total / candidates;
   if (!best || average <= 0 || bestScore / average < 1.5) return null;
+  return best;
+}
+
+/**
+ * Tempo of successive windows, so a track that speeds up or slows down gets a
+ * map of {start, bpm} sections instead of one average. Windows without a clear
+ * beat (breakdowns, intros) inherit the tempo around them, and readings a
+ * whole octave off the global tempo are folded back onto it.
+ */
+function tempoMap(envelope, reference, maxLag) {
+  const windowFrames = Math.round(FPS * 12);
+  const hop = Math.round(FPS * 6);
+  const shortest = Math.round(FPS * 6);
+  if (envelope.length < windowFrames + shortest) return null;
+
+  const windows = [];
+  for (let start = 0; start + shortest <= envelope.length; start += hop) {
+    const slice = envelope.subarray(start, Math.min(start + windowFrames, envelope.length));
+    let bpm = scanTempo(autocorrelation(slice, maxLag));
+    if (bpm) {
+      while (bpm < reference * 0.75) bpm *= 2;
+      while (bpm > reference * 1.5) bpm /= 2;
+    }
+    windows.push({ start: start / FPS, bpm });
+  }
+  if (!windows.some((entry) => entry.bpm)) return null;
+
+  let last = reference;
+  for (const entry of windows) {
+    if (entry.bpm) last = entry.bpm;
+    else entry.bpm = last;
+  }
+
+  // neighbours that agree within a few percent are one section
+  const segments = [];
+  for (const entry of windows) {
+    const previous = segments[segments.length - 1];
+    if (previous && Math.abs(entry.bpm - previous.bpm) / previous.bpm <= 0.04) {
+      previous.bpm = (previous.bpm * previous.count + entry.bpm) / (previous.count + 1);
+      previous.count += 1;
+    } else {
+      segments.push({ start: entry.start, bpm: entry.bpm, count: 1 });
+    }
+  }
+  if (segments.length < 2) return null;
+  segments[0].start = 0;
+  return segments.map(({ start, bpm }) => ({
+    start: Math.round(start * 100) / 100,
+    bpm: Math.round(bpm * 100) / 100
+  }));
+}
+
+/**
+ * Estimate the tempo of a decoded track, with the offset of the first beat so
+ * a beat grid can be drawn. When the tempo changes inside the track, `map`
+ * lists the {start, bpm} sections so the grid can follow it. Returns null when
+ * there is no clear beat (speech, ambient recordings, very short clips).
+ */
+export async function detectBpm(buffer) {
+  if (buffer.duration < 5) return null;
+  if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return null;
+
+  const envelope = onsetEnvelope(await monoSamples(buffer));
+  if (!envelope) return null;
+
+  const energy = envelope.reduce((sum, value) => sum + value, 0);
+  if (energy === 0) return null;
+
+  const maxLag = Math.ceil(((FPS * 60) / MIN_BPM) * 4);
+  const best = scanTempo(autocorrelation(envelope, maxLag));
+  if (!best) return null;
 
   const grid = alignGrid(envelope, (FPS * 60) / best);
   // flux at a frame is the rise from the frame before it, and a frame reacts
@@ -210,8 +265,10 @@ export async function detectBpm(buffer) {
   // plus half a window later than the frame the energy lands on
   const offset = ((grid.phase + 1) * HOP + FRAME / 2) / ANALYSIS_RATE;
   const period = grid.lag / FPS;
+  const refined = (FPS * 60) / grid.lag;
   return {
-    bpm: Math.round(((FPS * 60) / grid.lag) * 100) / 100,
-    offset: ((offset % period) + period) % period
+    bpm: Math.round(refined * 100) / 100,
+    offset: ((offset % period) + period) % period,
+    map: tempoMap(envelope, refined, maxLag)
   };
 }
