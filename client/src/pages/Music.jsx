@@ -6,6 +6,11 @@ import { analyseWaveform, mixWaveforms } from '../lib/waveform.js';
 
 const MAX_ZOOM = 32;
 const ROW_SIZES = ['compact', 'normal', 'large'];
+// the offscreen render covers more than the visible window, so scrolling it
+// during playback is a blit instead of a redraw
+const CACHE_SPANS = 3;
+const MAX_CACHE_PIXELS = 8192;
+const UNPLAYED_ALPHA = 0.4;
 
 function clock(seconds) {
   if (!Number.isFinite(seconds)) return '0:00';
@@ -20,6 +25,7 @@ function clock(seconds) {
  */
 function columnAmplitudes(peaks, duration, from, to, columns) {
   const perSecond = peaks.length / duration;
+  if (!Number.isFinite(perSecond)) return new Float32Array(columns);
   const step = ((to - from) * perSecond) / columns;
   const amplitudes = new Float32Array(columns);
 
@@ -44,29 +50,26 @@ function columnAmplitudes(peaks, duration, from, to, columns) {
 }
 
 /** Bass, mids and treble of a column mixed into one colour. */
-function columnColour(low, mid, high, played) {
+function columnColour(low, mid, high) {
   const loudest = Math.max(low, mid, high, 0.0001);
   const red = Math.round(80 + 175 * (low / loudest));
   const green = Math.round(80 + 175 * (mid / loudest));
   const blue = Math.round(80 + 175 * (high / loudest));
-  return `rgba(${red}, ${green}, ${blue}, ${played ? 1 : 0.4})`;
+  return `rgb(${red}, ${green}, ${blue})`;
 }
 
 /** Mirror the amplitudes around the centre line, one coloured column at a time. */
-function drawWaveform(context, columns, width, height, playhead) {
+function drawWaveform(context, columns, width, height) {
   const middle = height / 2;
   const count = columns.amplitude.length;
   const columnWidth = width / count;
 
   for (let column = 0; column < count; column += 1) {
     const amplitude = Math.max(columns.amplitude[column] * (middle - 2), 0.75);
-    const x = column * columnWidth;
     context.fillStyle = columns.low
-      ? columnColour(columns.low[column], columns.mid[column], columns.high[column], x <= playhead)
-      : x <= playhead
-        ? '#22d3ee'
-        : 'rgba(148, 163, 184, 0.45)';
-    context.fillRect(x, middle - amplitude, columnWidth + 0.5, amplitude * 2);
+      ? columnColour(columns.low[column], columns.mid[column], columns.high[column])
+      : '#22d3ee';
+    context.fillRect(column * columnWidth, middle - amplitude, columnWidth + 0.5, amplitude * 2);
   }
 }
 
@@ -127,60 +130,142 @@ function windowFor(progress, duration, zoom) {
   return { from, to: from + span };
 }
 
-function Waveform({ peaks, beat, progress, duration, zoom, loading, silent, onSeek, onZoom }) {
-  const canvasRef = useRef(null);
+/**
+ * Waveform and beat grid of a stretch of the track, drawn once into an
+ * offscreen canvas at screen resolution. It spans more than the visible window
+ * so that following the playhead only has to blit a moving slice of it.
+ */
+function renderCache(previous, { peaks, beat, duration, from, to, width, height, ratio }) {
+  const span = to - from;
+  const cacheSpan = Math.min(span * CACHE_SPANS, duration);
+  const pixels = Math.min(Math.round(((width * ratio) / span) * cacheSpan), MAX_CACHE_PIXELS);
+  const pixelHeight = Math.round(height * ratio);
+  const usable =
+    previous &&
+    previous.peaks === peaks &&
+    previous.beat === beat &&
+    previous.duration === duration &&
+    previous.canvas.width === pixels &&
+    previous.canvas.height === pixelHeight &&
+    previous.from <= from &&
+    previous.to >= to;
+  if (usable) return previous;
 
+  const canvas = previous?.canvas ?? document.createElement('canvas');
+  canvas.width = pixels;
+  canvas.height = pixelHeight;
+
+  const start = Math.min(Math.max(from + span / 2 - cacheSpan / 2, 0), Math.max(duration - cacheSpan, 0));
+  const end = start + cacheSpan;
+  const scale = pixels / cacheSpan;
+
+  // the peaks span the decoded audio, which can be a shade longer than the
+  // element reports; mapping through their own duration keeps them in time
+  const peakDuration = Number.isFinite(peaks.duration) ? peaks.duration : duration;
+  const columns = Math.round(pixels / ratio);
+  const band = (values) => (values ? columnAmplitudes(values, peakDuration, start, end, columns) : null);
+
+  const context = canvas.getContext('2d');
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, columns, height);
+  drawBeatGrid(context, beat, columns, height, start, end);
+  drawWaveform(
+    context,
+    {
+      amplitude: columnAmplitudes(peaks.peak, peakDuration, start, end, columns),
+      low: band(peaks.low),
+      mid: band(peaks.mid),
+      high: band(peaks.high)
+    },
+    columns,
+    height
+  );
+
+  return { canvas, peaks, beat, duration, from: start, to: end, scale };
+}
+
+function Waveform({ peaks, beat, audioRef, progress, duration, zoom, loading, silent, onSeek, onZoom }) {
+  const canvasRef = useRef(null);
+  const cacheRef = useRef(null);
+  const windowRef = useRef({ from: 0, to: 0 });
+  const inputRef = useRef(null);
+  inputRef.current = { peaks, beat, duration, zoom, progress };
+
+  // the playhead is read straight from the audio element every frame, so the
+  // drawing follows the sound instead of React state updates
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const width = canvas.clientWidth || 600;
-    const height = canvas.clientHeight || 120;
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
+    if (!canvas) return undefined;
+    cacheRef.current = null;
+    let frame = 0;
+    let drawn = null;
 
-    const context = canvas.getContext('2d');
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.clearRect(0, 0, width, height);
+    const render = () => {
+      frame = requestAnimationFrame(render);
+      const { peaks: current, beat: grid, duration: length, zoom: level, progress: fallback } = inputRef.current;
+      const width = canvas.clientWidth || 600;
+      const height = canvas.clientHeight || 120;
+      const ratio = window.devicePixelRatio || 1;
+      const time = audioRef?.current ? audioRef.current.currentTime : fallback;
+      const resized = canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio);
+      if (resized) {
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+        cacheRef.current = null;
+      }
+      const state = { time, width, height, ratio, length, level, peaks: current, beat: grid };
+      if (drawn && Object.keys(state).every((key) => state[key] === drawn[key])) return;
+      drawn = state;
 
-    const middle = height / 2;
+      const context = canvas.getContext('2d');
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
 
-    if (!peaks?.peak?.length || !duration) {
-      context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-      context.beginPath();
-      context.moveTo(0, middle);
-      context.lineTo(width, middle);
-      context.stroke();
-      return;
-    }
+      if (!current?.peak?.length || !length) {
+        context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+        context.beginPath();
+        context.moveTo(0, height / 2);
+        context.lineTo(width, height / 2);
+        context.stroke();
+        return;
+      }
 
-    const { from, to } = windowFor(progress, duration, zoom);
-    drawBeatGrid(context, beat, width, height, from, to);
+      const { from, to } = windowFor(time, length, level);
+      windowRef.current = { from, to };
+      const cache = renderCache(cacheRef.current, {
+        peaks: current,
+        beat: grid,
+        duration: length,
+        from,
+        to,
+        width,
+        height,
+        ratio
+      });
+      cacheRef.current = cache;
 
-    const count = Math.round(width * ratio);
-    const band = (values) => (values ? columnAmplitudes(values, duration, from, to, count) : null);
-    const playhead = ((progress - from) / (to - from)) * width;
-    drawWaveform(
-      context,
-      {
-        amplitude: columnAmplitudes(peaks.peak, duration, from, to, count),
-        low: band(peaks.low),
-        mid: band(peaks.mid),
-        high: band(peaks.high)
-      },
-      width,
-      height,
-      playhead
-    );
+      const sx = (from - cache.from) * cache.scale;
+      const sw = (to - from) * cache.scale;
+      context.globalAlpha = UNPLAYED_ALPHA;
+      context.drawImage(cache.canvas, sx, 0, sw, cache.canvas.height, 0, 0, width, height);
+      context.globalAlpha = 1;
 
-    if (playhead >= 0 && playhead <= width) {
+      const played = Math.min(Math.max((time - from) / (to - from), 0), 1);
+      if (played > 0) {
+        context.drawImage(cache.canvas, sx, 0, sw * played, cache.canvas.height, 0, 0, width * played, height);
+      }
+
+      const playhead = played * width;
       context.strokeStyle = 'rgba(34, 211, 238, 0.9)';
       context.beginPath();
       context.moveTo(playhead, 0);
       context.lineTo(playhead, height);
       context.stroke();
-    }
-  }, [peaks, beat, progress, duration, zoom]);
+    };
+
+    frame = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(frame);
+  }, [audioRef]);
 
   return (
     <div className="waveform">
@@ -189,7 +274,8 @@ function Waveform({ peaks, beat, progress, duration, zoom, loading, silent, onSe
         onClick={(event) => {
           if (!duration) return;
           const rect = event.currentTarget.getBoundingClientRect();
-          const { from, to } = windowFor(progress, duration, zoom);
+          const { from, to } = windowRef.current;
+          if (to <= from) return;
           onSeek(from + ((event.clientX - rect.left) / rect.width) * (to - from));
         }}
         onWheel={(event) => {
@@ -269,10 +355,16 @@ export default function Music() {
 
   useEffect(() => {
     if (!playing) return undefined;
+    let shown = -1;
     let frame = requestAnimationFrame(function tick() {
       const audio = audioRef.current;
       if (audio) {
-        setProgress({ time: audio.currentTime, duration: audio.duration || 0 });
+        // the waveform reads the element itself, so the clock and the scrubber
+        // only need a few updates a second
+        if (Math.abs(audio.currentTime - shown) >= 0.2) {
+          shown = audio.currentTime;
+          setProgress({ time: audio.currentTime, duration: audio.duration || 0 });
+        }
         // the mix is played by one element per stem, kept on the main clock
         for (const stem of Object.values(stemRefs.current)) {
           if (!stem) continue;
@@ -571,6 +663,9 @@ export default function Music() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !currentId) return;
+    // a leftover position from the previous track would scroll the waveform
+    // away from the start of this one
+    setProgress({ time: 0, duration: 0 });
     audio.load();
     if (playing) audio.play().catch(() => setPlaying(false));
   }, [currentId]);
@@ -891,6 +986,7 @@ export default function Music() {
             <Waveform
               peaks={shownPeaks}
               beat={bpm}
+              audioRef={audioRef}
               progress={progress.time}
               duration={progress.duration}
               zoom={zoom}

@@ -50,13 +50,14 @@ async function filtered(buffer, band) {
  */
 export async function analyseWaveform(buffer, { normalised = true } = {}) {
   const scale = normalised ? normalise : (peaks) => peaks;
+  const duration = buffer.duration;
   const peak = scale(envelope(buffer.getChannelData(0), buffer.sampleRate));
-  if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return { peak };
+  if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return { peak, duration };
   try {
     const [low, mid, high] = await Promise.all(BANDS.map((band) => filtered(buffer, band)));
-    return { peak, low: scale(low), mid: scale(mid), high: scale(high) };
+    return { peak, low: scale(low), mid: scale(mid), high: scale(high), duration };
   } catch {
-    return { peak };
+    return { peak, duration };
   }
 }
 
@@ -70,6 +71,8 @@ export function mixWaveforms(entries) {
   if (audible.length === 0) return null;
   const length = Math.min(...audible.map(([analysis]) => analysis.peak.length));
   const banded = audible.every(([analysis]) => analysis.low && analysis.mid && analysis.high);
+  // the shortest stem decides the length, so its duration is the one drawn
+  const duration = Math.min(...audible.map(([analysis]) => analysis.duration ?? Infinity));
 
   const sum = (key) => {
     const values = new Float32Array(length);
@@ -87,6 +90,12 @@ export function mixWaveforms(entries) {
     return values;
   };
 
-  if (!banded) return { peak: scale(peak) };
-  return { peak: scale(peak), low: scale(sum('low')), mid: scale(sum('mid')), high: scale(sum('high')) };
+  if (!banded) return { peak: scale(peak), duration };
+  return {
+    peak: scale(peak),
+    low: scale(sum('low')),
+    mid: scale(sum('mid')),
+    high: scale(sum('high')),
+    duration
+  };
 }
